@@ -100,6 +100,19 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
   blend**: accuracy held 5/5 but the reasoning 24B burns 5–20× more completion
   tokens on compressed prompts (net 3–8× cost on billed output) — Compress pays
   only in front of non-reasoning or free-output models, or very large contexts.
+- **Reasoning-at-lower-cost probe 2026-10-13 (the user's stated interest):** three
+  arms over the blend's own 21K-token corpus, five reasoning-shaped questions
+  (arithmetic over documented costs, multi-hop over the orchestrator's control
+  flow, gate semantics, rule application), deterministic grading against
+  source-verified ground truth. **qwen3.8-flash (token-plan) matched the 24B 5/5**
+  at ~2/3 the estimated cost (token-plan usage carries no cost field — only
+  tokens, `reasoning_tokens` broken out, so qwen is itself a reasoning model;
+  the 24B's costs are real from Liquid's usage). Compress failed the same probe
+  4/5 — at a 3% kept ratio it dropped the exact cost figures the arithmetic
+  needed (fact-dropping, on top of the reasoning burn). **Synthesis: enhancement
+  and cost are separable levers — enhancement is the grounding + gate (proven),
+  cost is model choice + the route gate (now probe-supported). Next rung: cheap
+  synthesizer by default, the existing gate as insurance, 24B on escalation.**
 - **User endorsement 2026-10-13: blend1 is a keeper for future use. The ~15s
   full-blend duration is NOT a concern — accuracy and savings justify it. Do not
   propose latency optimizations (skipping the gate, caching the tabular fit,
