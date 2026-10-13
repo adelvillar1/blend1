@@ -12,6 +12,17 @@ contracts — every wire in the draft was wrong in some way. All four model lane
 live-verified end-to-end; the full blend returned a real TabPFN churn prediction
 (p=0.924) synthesized by the 24B with retrieved corpus context for ≈$0.0016/ask.
 
+The session then extended into the **specialized-model palette** program: ScaleDown
+(scaledown.ai) was studied end-to-end (four models, 16 cookbook recipes, contracts
+distilled into the `scaledown-models` skill), a three-way decision-model probe
+(d1 vs GLiDE vs ScaleDown classify-1) assigned seats — route on any, validate on
+GLiDE — and classify-1 was registered as sys1's ninth core provider. A Compress
+probe on blend1's own corpus returned a negative result with a mechanism: accuracy
+holds (5/5) but a billed reasoning model burns 5–20× more completion tokens on
+compressed prompts, so Compress does not pay in front of the 24B leg. The user
+endorsed blend1 as a keeper and set the operating principle: full-blend duration
+(~15s) is not a concern — accuracy and savings justify it.
+
 ## Plans worked on
 
 - **`docs/plans/2026-10-13-blend1-foundation.md`** — status: **completed**. All
@@ -26,8 +37,12 @@ live-verified end-to-end; the full blend returned a real TabPFN churn prediction
 | Repo | Hash | Message |
 |------|------|---------|
 | blend1 | `34b4126` | blend1 v0.1.0: the blended lane — d1 router + EmbeddingGemma-2 + TabPFN + LFM2.5-24B |
-| blend1 | (pending) | methodology artifacts + validation gate (v0.2) — this session's doc + gate layer |
+| blend1 | `d597b6d` | blend1 v0.2: validation gate — GLiDE rates the 24B, critics break ties, one retry |
+| blend1 | `00fa252` | smoke: exercise the validation gate end-to-end |
+| blend1 | `9900774` | docs: record the user endorsement |
+| blend1 | `3977005` | docs: Compress probe result — not a fit for the 24B leg |
 | sem1 | `b7bd58b` | fix: a bare string is one text item, not an iterable of characters |
+| sys1 | `701b44a` | feat: ScaleDown classify-1 provider (the Jev mirror) + MCP pass-through; stale safety-routing test fixed |
 
 ## What was added
 
@@ -43,6 +58,11 @@ live-verified end-to-end; the full blend returned a real TabPFN churn prediction
 - Methodology artifacts: `CLAUDE.md`, `CLAUDE.local.md` (gitignored),
   `TECHNICAL-DOCUMENTATION.md`, `FUNCTIONAL-SPECIFICATIONS.md`, this recap,
   plan docs with frontmatter, full `.gitignore`.
+- **Palette program (later in the session):** the `scaledown-models` skill
+  (four model contracts, 16 cookbook recipes, problem shapes, wire gotchas);
+  `SCALEDOWN_API_KEY` stored in `~/.config/blend1/env` (chmod 600); the
+  three-way probe artifacts (`/tmp/three_way_probe.py`); the Compress probe
+  (`/tmp/compress_probe.py`); sys1's `scaledown` provider (recap in sys1).
 
 ## What was fixed
 
@@ -59,6 +79,11 @@ live-verified end-to-end; the full blend returned a real TabPFN churn prediction
   (`/openai/v1/chat/completions`, 404 on `/v1/chat/completions`), one key for both
   Liquid lanes; reasoning-model handling (empty content = failed leg); cost +
   tok/s telemetry; output cap raised to 16K per user (128K context window).
+- **blend1 number check (two rounds):** percent-vs-probability formatting
+  (`92.4%` vs `p=0.924` — same number, now canonicalized); and the givens set
+  excluded the prompt, so the asker's own numbers (customer ids) false-positived
+  — the critic chain overruled it live, then the allowed set gained the prompt.
+- **sys1 (committed):** the stale safety-routing test (see sys1's recap).
 
 ## Files changed
 
@@ -98,6 +123,9 @@ live-verified end-to-end; the full blend returned a real TabPFN churn prediction
 6. **Live retry cycle** — proven offline; the organic drift observed earlier
    today rates 0.30 on GLiDE (clear fail → retry path), but the retry has not
    fired in a live run yet.
-7. **Git** — this recap and the methodology artifacts are unstaged for review
-   (methodology rule: recaps are never auto-committed); blend1's commits
-   (`34b4126`, `d597b6d`, `00fa252`) and the sem1 fix (`b7bd58b`) are already in.
+7. **ScaleDown seats** — classify-1 is admitted as a route seat on one probe;
+   its floors stay unfitted until the JSONL stream says otherwise. Compress
+   probed and rejected for the 24B leg (see the Compress probe in the skill).
+8. **Git** — all repos committed; blend1 published to GitHub, sys1 pushed on
+   `feature/plan-surface`, sem1 pushed on `main` (carrying three pre-existing
+   unpushed MCP commits alongside the sem1 fix).
