@@ -96,7 +96,10 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
 - Open: `decompose` shape recorded but not acted on (v0.3?); gate floors UNFITTED
   until feedback rows exist; local-24B GGUF deferred (16 GB machine); neighbor
   relevance gating (recap #5) — the gate now catches the drift it causes, which is
-  the cheaper fix.
+  the cheaper fix. **ScaleDown Compress probed 2026-10-13 and does NOT fit this
+  blend**: accuracy held 5/5 but the reasoning 24B burns 5–20× more completion
+  tokens on compressed prompts (net 3–8× cost on billed output) — Compress pays
+  only in front of non-reasoning or free-output models, or very large contexts.
 - **User endorsement 2026-10-13: blend1 is a keeper for future use. The ~15s
   full-blend duration is NOT a concern — accuracy and savings justify it. Do not
   propose latency optimizations (skipping the gate, caching the tabular fit,
