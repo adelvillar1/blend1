@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "blend1"
+version = "0.1.0"
+description = "The blended lane of the sys1 house pattern: one ask() that runs the d1 router (sys1), the local EmbeddingGemma-2 semantic lane (sem1), and the TabPFN tabular lane (sdm1) in parallel, then synthesizes with Liquid LFM2-24B-A2B only when the router says generative synthesis is required."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Alejandro Del Villar" }]
+keywords = [
+    "liquid",
+    "lfm",
+    "tabpfn",
+    "embeddinggemma",
+    "router",
+    "orchestration",
+    "system-one",
+]
+
+# Stdlib-only core. The four sibling lanes are path dependencies: blend1
+# composes them, it does not reimplement them.
+dependencies = [
+    "sys1",
+    "sem1",
+    "sdm1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.6",
+]
+# The voice output lane shells into gen1 (dashscope/stepfun transports).
+voice = [
+    "gen1",
+]
+service = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/adelvillar1/blend1"
+Repository = "https://github.com/adelvillar1/blend1"
+Issues = "https://github.com/adelvillar1/blend1/issues"
+
+[project.scripts]
+blend1 = "blend1.cli:main"
+
+[tool.uv.sources]
+sys1 = { path = "../sys1", editable = true }
+sem1 = { path = "../sem1", editable = true }
+sdm1 = { path = "../sdm1", editable = true }
+gen1 = { path = "../gen1", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blend1"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

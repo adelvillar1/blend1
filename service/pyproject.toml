@@ -1,0 +1,16 @@
+[project]
+name = "blend1-service"
+version = "0.1.0"
+description = "HTTP wrapper for blend1 — the same ask() over REST."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "blend1",
+]
+
+[tool.uv.sources]
+blend1 = { path = "..", editable = true }
+
+[project.scripts]
+blend1-serve = "uvicorn:main"

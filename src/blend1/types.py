@@ -1,0 +1,76 @@
+"""The BlendResult contract — one shape regardless of which lanes answered.
+
+Contract rule (house pattern): result keys are only ever ADDED. Renaming or
+removing a key below is a breaking change and needs a plan.
+
+Every lane reports itself: `route`, `semantic`, `tabular`, `generated`,
+`voice` each carry their own telemetry and their own error. A lane that
+could not answer never breaks the blend — it fails open with its reason
+recorded, and the orchestrator composes the best answer from the lanes that
+did answer (mirroring sys1/sdm1 fail-open).
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+from typing import Any
+
+RESULT_KEYS = (
+    "prompt_sha256",
+    "prompt_chars",
+    "path",
+    "route",
+    "semantic",
+    "tabular",
+    "generated",
+    "voice",
+    "final_answer",
+    "total_latency_ms",
+)
+
+
+def _lane(status: str, **kw: Any) -> dict:
+    return {"status": status, **kw}
+
+
+@dataclass
+class BlendResult:
+    prompt_sha256: str
+    prompt_chars: int
+    path: str  # "direct" | "synthesized" | "decompose"
+    route: dict = field(default_factory=dict)
+    semantic: dict = field(default_factory=dict)
+    tabular: dict = field(default_factory=dict)
+    generated: dict = field(default_factory=dict)
+    voice: dict = field(default_factory=dict)
+    final_answer: str = ""
+    total_latency_ms: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "prompt_sha256": self.prompt_sha256,
+            "prompt_chars": self.prompt_chars,
+            "path": self.path,
+            "route": dict(self.route),
+            "semantic": dict(self.semantic),
+            "tabular": dict(self.tabular),
+            "generated": dict(self.generated),
+            "voice": dict(self.voice),
+            "final_answer": self.final_answer,
+            "total_latency_ms": self.total_latency_ms,
+        }
+
+    @property
+    def escalated(self) -> bool:
+        """True when any lane failed open — the caller should know the answer
+        rests on fewer lanes than requested."""
+        return any(
+            lane.get("status") == "error"
+            for lane in (self.route, self.semantic, self.tabular, self.generated, self.voice)
+            if lane
+        )
+
+
+def prompt_sha256(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
