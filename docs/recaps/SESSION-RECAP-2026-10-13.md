@@ -129,3 +129,81 @@ endorsed blend1 as a keeper and set the operating principle: full-blend duration
 8. **Git** — all repos committed; blend1 published to GitHub, sys1 pushed on
    `feature/plan-surface`, sem1 pushed on `main` (carrying three pre-existing
    unpushed MCP commits alongside the sem1 fix).
+
+---
+
+## Part 2 — the specialized-model palette program (appended at wrap-up)
+
+The session continued past the v0.2 gate into the user's strategic frame
+(recorded in memory): *combining specialized models to raise the quality of the
+dev process* — with the user's stated interest being **enhancing reasoning at a
+lower cost**.
+
+### Commits (part 2)
+
+| Repo | Hash | Message |
+|------|------|---------|
+| sys1 | `701b44a` | feat: ScaleDown classify-1 provider (the Jev mirror) + MCP pass-through; stale safety-routing test fixed |
+| sys1 | `b033e4f` | docs: session recap 2026-10-13 |
+| blend1 | `3977005` | docs: Compress probe result — not a fit for the 24B leg |
+| blend1 | `73822a6` | docs: reasoning-at-lower-cost probe |
+| blend1 | `5d4ec60` | docs: reframe the probe economics — capacity preservation, not cost-per-call (user correction) |
+| blend1 | `6e70459` | docs: Julia-seat probe |
+| blend1 | `0f15fb7` | docs: correct the gate-cost claim to the user's Fastino receipt |
+| — | — | blend1 repo created public (github.com/adelvillar1/blend1) and pushed |
+
+### What was added (part 2)
+
+- sys1's `scaledown` provider (classify-1, the documented Jev mirror) — full
+  detail in sys1's own recap; admitted as a **route seat** on probe evidence.
+- The `scaledown-models` skill (four model contracts, 16 cookbook recipes,
+  problem shapes, wire gotchas).
+- Three probes on blend1's own 21K-token corpus with deterministic grading
+  against source-verified ground truth:
+  1. **Compress** — accuracy held 5/5 but the economics invert on a billed
+     reasoning model (5–20× completion burn; a 3% kept ratio dropped exact
+     figures an arithmetic question needed). **Rejected** — three probes, three
+     stacks, same direction.
+  2. **Reasoning-at-lower-cost** — qwen3.8-flash (token-plan) **matched the
+     24B 5/5** on reasoning-shaped questions (arithmetic over documented
+     costs, multi-hop over the orchestrator's control flow, gate semantics).
+  3. **Julia-seat** — qwen holds a *decision* seat: route 4/4 with margins
+     sharper than every paid seat (0.0 vs d1's 0.002; 1.0 vs glide's 0.994),
+     gate outcomes 4/4 (DRIFT's contra=1.0 is a clear fail → retry), 0 parse
+     failures. Caveats: 7–43s latency; 4 designed states.
+
+### User corrections absorbed (durable)
+
+- **The economics frame is CAPACITY, not cost-per-call** (stated 2026-10-13):
+  the win of a cheap model matching a frontier one is preserved frontier
+  budget for the harder problems — never re-frame as a per-call comparison.
+- **Blended estimates suffice on cost questions**; do not chase per-call
+  precision and do not instrument per-request cost measurement.
+
+### Vendor receipts (the user's own meters)
+
+- Fastino/GLiDE: $2.82 / 5.7K requests / 9.2M tokens over 30 days —
+  "almost too cheap to measure."
+- Julia-1: $0.000239525 / 13 calls.
+- Conclusion: the decision layer is pocket change at personal scale; **all
+  real cost pressure lives in the synthesis seat** — the seat the almost-free
+  model holds at parity. The old docs' gate-cost range was never instrumented
+  and was corrected to the blended statement.
+
+### PARKED — the next rung (not started)
+
+**Cheap synthesizer by default, the validation gate as allocator, 24B reserved
+for gate-fails and decompose-shaped asks.** All three probe legs (parity,
+decision-seat, economics) are behind it; the build is a `synthesizer` seat in
+the generate lane with fail-open, per the lane pattern. **The user has other
+plans gated on the Fleet session finishing first — do not start this rung
+until Fleet's work is confirmed complete.** The verify-stage experiment (dev-
+process application: acceptance criteria as noul heads, providers rating the
+same artifact) remains the follow-on thread.
+
+### Wrap-up debts (2026-10-13)
+
+- **sys1 CLAUDE.md "Today's state" is stale**: the roster line still says 8
+  core providers (scaledown makes 9) and the test count says 364 (now 369).
+  The write was blocked by the CLAUDE.md protection gate (approval prompt
+  timed out — user AFK). Retry the edit when the user is present.
