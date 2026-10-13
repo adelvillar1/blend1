@@ -156,9 +156,13 @@ like sys1's service).
 | "Based on this customer data, what should we do about 4471?" + table | 0.743 | synthesized | route, semantic, **tabular (p=0.924)**, generate |
 
 Cost per synthesized ask ≈ $0.0016 (d1 $0.000004 + TabPFN metered + 24B);
-per direct ask ≈ $0.000004. The validation gate adds ~$0.00001–0.0001 per
-synthesized answer (GLiDE rating, or a critic call on escalation) and at most
-one extra generate call on definitive failures.
+per direct ask ≈ $0.000004. The validation gate is metered on Fastino's
+decision models, which return no cost field (GLiDE's `cost_usd` is always
+None), so treat any per-call figure as a blended estimate: the user's 30-day
+Fastino receipt (5.7K requests, 9.2M tokens, $2.82) blends to ~$0.0005/request
+and ~$0.31/1M tokens — sub-cent per gate call at any personal scale, and never
+a reason to skip the gate. A definitive failure adds at most one extra
+generate call.
 
 ### Gate outcomes observed live (2026-10-13)
 

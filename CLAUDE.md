@@ -118,6 +118,16 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
   (proven); the cheap synthesizer is the capacity lever. Next rung: cheap
   synthesizer by default, the existing gate as insurance, 24B reserved for what
   fails the gate or needs decomposition.
+- **Vendor economics, from the user's own receipts 2026-10-13:** Fastino/GLiDE
+  $2.82 for 5.7K requests over 30 days (~$0.0005/request blended, ~$0.31/1M
+  tokens — "almost too cheap to measure"); Julia-1 $0.000239525 for 13 calls.
+  **The decision layer is pocket change at personal scale; all real cost
+  pressure lives in the synthesis seat** (24B ≈ $0.001/ask, measured $0.0009059
+  in telemetry) — which is exactly the seat the almost-free model holds at
+  parity. GLiDE returns no cost field (`cost_usd` always None) and the blend's
+  validation rows record no cost, so per-call gate figures are blended
+  estimates — user preference: blended estimates suffice, do not chase
+  per-call precision on cost questions.
 - **Julia-seat probe 2026-10-13 (the user's Supersoniclabs receipt: 13 calls /
   9.6K tokens / $0.000239525 metered):** can the almost-free model hold a
   DECISION seat, not just prose reasoning? qwen3.8-flash on the three-way
