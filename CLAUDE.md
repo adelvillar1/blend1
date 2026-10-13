@@ -95,5 +95,9 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
   single-character items (committed in sem1 as `b7bd58b`).
 - Open: `decompose` shape recorded but not acted on (v0.3?); gate floors UNFITTED
   until feedback rows exist; local-24B GGUF deferred (16 GB machine); neighbor
-  relevance gating (recap #6) — the gate now catches the drift it causes, which is
+  relevance gating (recap #5) — the gate now catches the drift it causes, which is
   the cheaper fix.
+- **User endorsement 2026-10-13: blend1 is a keeper for future use. The ~15s
+  full-blend duration is NOT a concern — accuracy and savings justify it. Do not
+  propose latency optimizations (skipping the gate, caching the tabular fit,
+  trimming the parallel lanes) unless asked.**
