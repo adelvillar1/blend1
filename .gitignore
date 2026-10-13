@@ -1,4 +1,35 @@
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
 .venv/
+venv/
+env/
+
 uv.lock
+!service/uv.lock
+
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+blend1-*.log
+*.log
+
+# Local env reference (gitignored; holds credentials/URLs)
+CLAUDE.local.md
+
+# Local env vars (gitignored; holds API keys)
+.env

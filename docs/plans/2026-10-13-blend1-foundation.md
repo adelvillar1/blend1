@@ -1,7 +1,15 @@
+---
+status: completed
+created: 2026-10-13
+updated: 2026-10-13
+slug: blend1-foundation
+---
+
 # blend1 foundation — the blended lane
 
 **Status: implemented + live-smoked 2026-10-13.** Offline suite 8/8 green, ruff
-clean, live smoke exercises every lane that can answer today.
+clean, live smoke exercises every lane that can answer today — and with the
+TabPFN key wired, all four model lanes answer for real.
 
 ## Goal
 

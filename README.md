@@ -35,10 +35,30 @@ print(r.generated["model"])  # "liquid/lfm-2.5-24b-a2b"
 | `tabular` | **TabPFN** via [sdm1](https://github.com/adelvillar1/sdm1) (Prior Labs cloud API, fit-per-call) | exact predictions on tabular rows | `TABPFN_API_KEY` |
 | `generate` | **LFM2.5-24B-A2B** via Liquid's own API (`/openai/v1/chat/completions`) | the synthesized prose | `LIQUID_API_KEY` (same key as d1) |
 | `voice` | gen1 `speak` cascade (qwen → stepfun → kokoro) | audio render of the final answer | `DASHSCOPE_API_KEY` / `STEPFUN_API_KEY` |
+| `validate` | **GLiDE** via sys1 (Jev-class decision model) | rates every synthesized answer; definitive fails get one retry, inconclusive escalates | `FASTINO_API_KEY` |
+| `critics` | qwen3.8-flash (Token Plan) → glm-5.3-flash (ollama-cloud) | break inconclusive gates — the escalation tier | `TOKEN_PLAN_API_KEY` / `OLLAMA_API_KEY` |
 
 Everything hosted is one vendor: d1 and the 24B share `LIQUID_API_KEY`; TabPFN
 is Prior Labs' cloud API. The only model that runs on this machine is
 EmbeddingGemma-2 (llama-server, LaunchAgent-owned on `127.0.0.1:8901`).
+
+## The validation gate (v0.2)
+
+Every synthesized answer is rated before it ships — by **GLiDE**, a decision
+model from a different vendor than the d1 router, so the critic is not the
+model that framed the task. Three outcomes:
+
+- **passed** — both nouls clear their floors and the deterministic number
+  check (percentages canonicalized to probabilities) finds no invented
+  numbers. The answer ships. Cost: ~$0.00001.
+- **failed** — a noul sits a full 0.15 band beyond its floor (clear drift or
+  contradiction). **One retry** with the verdict injected as feedback; the
+  retry is gated too, and a failed retry ships the original answer *flagged*,
+  never blocked.
+- **inconclusive** — near-floor nouls or mixed signals. **Escalates to the
+  critic chain** (qwen3.8-flash → glm-5.3-flash); the critic's verdict
+  decides. No critic reachable → the answer ships ungated with
+  `escalated: true`. The gate never blocks.
 
 ## Operating rules (inherited from the house)
 

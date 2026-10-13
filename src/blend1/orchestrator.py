@@ -58,6 +58,41 @@ def _semantic_facts(semantic: dict) -> str:
     )
 
 
+def _validate_state(prompt: str, givens: str, answer: str) -> str:
+    """The state the critic reads: the ask, the givens, the answer."""
+    return (
+        f"QUESTION: {prompt}\n"
+        f"FACTS (computed by other lanes — the answer may use these and no others):\n{givens}\n"
+        f"ANSWER: {answer}"
+    )
+
+
+def _retry_feedback(validation: dict) -> str:
+    """Render the gate's verdict as feedback for the retry's system prompt."""
+    problems = []
+    atq = validation.get("answers_the_question")
+    if atq is not None and atq < lanes.VALIDATE_FLOOR:
+        problems.append(
+            f"your answer drifted from the question that was asked "
+            f"(rated {atq:.2f} on addressing it) — answer the actual ask"
+        )
+    contra = validation.get("contradicts_facts")
+    if contra is not None and contra >= (1.0 - lanes.VALIDATE_FLOOR):
+        problems.append(
+            f"your answer contradicted the given facts "
+            f"(rated {contra:.2f} on contradicting them) — restate them exactly"
+        )
+    if validation.get("number_check") == "flagged":
+        problems.append(
+            "your answer cited numbers that are not in the given facts: "
+            + ", ".join(validation.get("flagged_numbers") or [])
+            + " — use only the facts as given"
+        )
+    if not problems:
+        problems.append("the previous attempt was rated unsatisfactory")
+    return "A validation gate rejected your previous answer: " + "; ".join(problems) + "."
+
+
 def _fallback_answer(
     route: dict, semantic: dict, tabular: dict, target: str | None, generated: dict
 ) -> str:
@@ -137,12 +172,51 @@ def ask(
     path = "decompose" if shape == "decompose" else ("synthesized" if needs_generation else DIRECT_SHAPE)
 
     generated: dict = {}
+    validation: dict = {}
     if needs_generation:
-        generated = gen_fn(
-            prompt,
-            tabular_facts=_tabular_facts(tabular, target or "target"),
-            semantic_facts=_semantic_facts(semantic),
-        )
+        # The givens the number check allows = the prompt + the computed
+        # facts. The prompt matters: an asker's own numbers (customer ids,
+        # dates) are legitimately quotable — the check exists to catch
+        # numbers invented by the MODEL, not numbers the human supplied.
+        givens = prompt + "\n" + _tabular_facts(tabular, target or "target") + "\n" + _semantic_facts(semantic)
+        generated = gen_fn(prompt, tabular_facts=_tabular_facts(tabular, target or "target"),
+                           semantic_facts=_semantic_facts(semantic))
+
+        # ── validation gate: GLiDE rates the answer before it ships ──
+        if generated.get("status") == "ok":
+            validate_fn = ov.get("validate", lanes.validate_lane)
+            state = _validate_state(prompt, givens, generated["text"])
+            validation = validate_fn(state, givens=givens)
+
+            if validation.get("status") == "ok" and validation.get("passed") is False:
+                # One bounded retry: the verdict rides back into the generate
+                # lane as feedback. Worst case ≈ 2x generate cost, failures only.
+                # NOTE: `passed is False` — an inconclusive outcome (passed
+                # None, no critic answered) ships ungated, it does not retry.
+                feedback = _retry_feedback(validation)
+                retry = gen_fn(prompt, tabular_facts=_tabular_facts(tabular, target or "target"),
+                               semantic_facts=_semantic_facts(semantic), feedback=feedback)
+                retry_validation = {}
+                if retry.get("status") == "ok":
+                    retry_validation = validate_fn(
+                        _validate_state(prompt, givens, retry["text"]), givens=givens
+                    )
+                if retry.get("status") == "ok" and retry_validation.get("passed"):
+                    generated = retry
+                    validation = {**retry_validation, "retried": True}
+                else:
+                    # The retry didn't clear the gate either: the ORIGINAL
+                    # answer ships, flagged — the gate never blocks.
+                    validation = {
+                        **validation,
+                        "retried": True,
+                        "retry_passed": False,
+                        "retry_error": retry.get("error"),
+                    }
+            if validation.get("status") != "ok":
+                # A down critic ships the answer ungated (fail-open) — the
+                # reason rides in the validation report, not the answer.
+                validation = {"status": "error", "error": validation.get("error")}
 
     if needs_generation and generated.get("status") == "ok":
         final_answer = generated["text"]
@@ -162,6 +236,7 @@ def ask(
         semantic=semantic,
         tabular=tabular,
         generated=generated,
+        validation=validation,
         voice=voice_report,
         final_answer=final_answer,
         total_latency_ms=int((time.monotonic() - t0) * 1000),
@@ -178,6 +253,7 @@ def ask(
             "semantic_neighbor_keys": [n["key"] for n in semantic.get("neighbors", [])],
             "tabular": {k: v for k, v in tabular.items() if k not in ("predictions", "telemetry")},
             "generated": {k: v for k, v in generated.items() if k != "text"},
+            "validation": {k: v for k, v in validation.items() if k != "telemetry"},
             "voice": voice_report,
             "answer_sha256": prompt_sha256(final_answer),
             "answer_chars": len(final_answer),

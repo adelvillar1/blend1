@@ -24,6 +24,7 @@ RESULT_KEYS = (
     "semantic",
     "tabular",
     "generated",
+    "validation",
     "voice",
     "final_answer",
     "total_latency_ms",
@@ -43,6 +44,7 @@ class BlendResult:
     semantic: dict = field(default_factory=dict)
     tabular: dict = field(default_factory=dict)
     generated: dict = field(default_factory=dict)
+    validation: dict = field(default_factory=dict)
     voice: dict = field(default_factory=dict)
     final_answer: str = ""
     total_latency_ms: int = 0
@@ -56,6 +58,7 @@ class BlendResult:
             "semantic": dict(self.semantic),
             "tabular": dict(self.tabular),
             "generated": dict(self.generated),
+            "validation": dict(self.validation),
             "voice": dict(self.voice),
             "final_answer": self.final_answer,
             "total_latency_ms": self.total_latency_ms,
@@ -64,12 +67,21 @@ class BlendResult:
     @property
     def escalated(self) -> bool:
         """True when any lane failed open — the caller should know the answer
-        rests on fewer lanes than requested."""
-        return any(
+        rests on fewer lanes than requested. A validation gate that FAILED
+        the answer (even after retry) also escalates: the answer ships, but
+        the caller deserves to know it was rated unsatisfactory."""
+        lanes_errored = any(
             lane.get("status") == "error"
-            for lane in (self.route, self.semantic, self.tabular, self.generated, self.voice)
+            for lane in (self.route, self.semantic, self.tabular, self.generated,
+                         self.validation, self.voice)
             if lane
         )
+        gate_failed = bool(
+            self.validation
+            and self.validation.get("status") == "ok"
+            and not self.validation.get("passed", True)
+        )
+        return lanes_errored or gate_failed
 
 
 def prompt_sha256(prompt: str) -> str:

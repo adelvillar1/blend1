@@ -60,6 +60,7 @@ def load_env(path: Path | None = None) -> dict:
             Path.home() / ".config" / "sdm1" / "env",
             Path.home() / ".config" / "dev-decisions" / "env",
             Path.home() / ".config" / "gen1" / "env",
+            Path.home() / ".hermes" / ".env",
         ):
             if extra not in paths:
                 paths.append(extra)
