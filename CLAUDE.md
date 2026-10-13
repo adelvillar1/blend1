@@ -118,6 +118,19 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
   (proven); the cheap synthesizer is the capacity lever. Next rung: cheap
   synthesizer by default, the existing gate as insurance, 24B reserved for what
   fails the gate or needs decomposition.
+- **Julia-seat probe 2026-10-13 (the user's Supersoniclabs receipt: 13 calls /
+  9.6K tokens / $0.000239525 metered):** can the almost-free model hold a
+  DECISION seat, not just prose reasoning? qwen3.8-flash on the three-way
+  probe's designed states, same head wording, graded against designed ground
+  truth: **route seat 4/4 with margins sharper than every paid seat** (ng 0.0
+  vs d1's 0.002 on direct; 1.0 vs glide's 0.994 on synth; shapes correct);
+  **gate outcomes 4/4** — DRIFT's contra=1.0 is a clear fail (≥0.85) → retry,
+  a stronger drift signal than GLiDE's recorded 0.48–0.91; 0 parse failures
+  (strict system-prompt JSON contract held). Caveats: latency 7–43s per
+  decision (token-plan queues — would strain the ~15s blend budget the user
+  endorsed); 4 designed states, so the validate seat needs more evidence
+  before displacing GLiDE. The route seat — every ask's highest-frequency
+  decision — is probe-backed.
 - **User endorsement 2026-10-13: blend1 is a keeper for future use. The ~15s
   full-blend duration is NOT a concern — accuracy and savings justify it. Do not
   propose latency optimizations (skipping the gate, caching the tabular fit,
