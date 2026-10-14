@@ -100,10 +100,70 @@ uv run blend1 doctor
 ## HTTP service
 
 ```bash
-cd service && uv sync && uv run blend1-serve --port 8420
+cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420
 curl -X POST http://localhost:8420/v1/ask -H 'Content-Type: application/json' \
   -d '{"prompt":"write a save email for 4471","table":[…],"target":"churned"}'
 ```
+
+### The OpenAI-compatible face — `POST /v1/chat/completions`
+
+The same `ask()` behind the dialect any OpenAI client already speaks: the
+`messages` render to one prompt (`role: content` lines, system messages
+included and in order — the last user message is the question) and the answer
+comes back in the standard envelope, so a client that reads only
+`choices[0].message.content` works unchanged.
+
+```bash
+curl -X POST http://localhost:8420/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"blend1","messages":[{"role":"user","content":"What runs the blend1 offline suite?"}]}'
+```
+
+```json
+{
+  "id": "chatcmpl-blend1-9f3ac21b",
+  "object": "chat.completion",
+  "created": 1760481234,
+  "model": "blend1",
+  "choices": [{"index": 0,
+               "message": {"role": "assistant", "content": "uv run --extra dev pytest …"},
+               "finish_reason": "stop"}],
+  "blend1": {
+    "path": "synthesized",
+    "route": {"status": "ok", "needs_generation": 0.93, "answer_shape": "synthesized"},
+    "validation": {"status": "ok", "passed": true, "outcome": "passed"},
+    "escalated_answer": false,
+    "cost_usd": 0.0016,
+    "latency_ms": 8123
+  }
+}
+```
+
+**The `blend1` field is non-standard on purpose** — blend1's truth rides *beside*
+the answer, never instead of it:
+
+| key | what it is |
+|---|---|
+| `path` | the shape d1 chose: `direct` \| `synthesized` \| `decompose` |
+| `route` | d1's lane report — the nouls, including `needs_generation` |
+| `validation` | the GLiDE gate's verdict — `passed` is `false` (a failed gate) or `null` (inconclusive) when the answer was never cleared |
+| `escalated_answer` | `true` when the larger configured model answered after the gate could not clear |
+| `cost_usd` | the measured generative cost — **`null` when unmeasured, never `$0`** |
+| `latency_ms` | the ask's end-to-end latency |
+
+The endpoint **never 500s and never retries or reroutes**: `ask()` fails open, so
+an empty answer is a `200` with content `""` and the reason in the `blend1`
+field, and a gate that did not pass is a `200` with the answer shipping flagged —
+a flag is information, an outage is an outage. The only non-200 is a `401` on a
+bad bearer, and only when `BLEND1_BEARER_TOKEN` is set (unset = localhost-open).
+
+Two optional extensions to the envelope: `"model"` (echoed back, defaults to
+`"blend1"`) and `"blend1_project"` — which corpus project the ask resolves
+against, so the same prompt does not answer differently by accident of the
+directory the service started in.
+
+This is the surface the [agnostic-router-kit](https://github.com/adelvillar1/agnostic-router-kit)
+routes a `composed` tier to — the plan is `2026-10-14-composed-tier.md` in that
+repo (`docs/plans/`).
 
 ## What Gemini's draft got wrong (and what this builds instead)
 
