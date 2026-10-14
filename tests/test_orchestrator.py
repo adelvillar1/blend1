@@ -431,7 +431,9 @@ def test_web_lane_error_fails_open():
     assert r.web["status"] == "error"
     assert "TINYFISH_API_KEY" in r.web["error"]
     assert r.escalated, "a web-lane error escalates"
-    assert r.final_answer, "the ask still answers when the web lane fails open"
+    assert r.final_answer == "echo: What is the current MapLibre GL JS 3D terrain API?", (
+        "the ask still answers when the web lane fails open"
+    )
 
 
 def test_route_task_has_three_heads():
@@ -440,4 +442,121 @@ def test_route_task_has_three_heads():
     task = _route_task()
     assert len(task.heads) == 3
     assert "needs_live_facts" in task.head_ids()
+
+
+def test_web_lane_internals_with_fake_sdk(monkeypatch):
+    """web_lane itself — the orchestrator tests above stub the lane, so this
+    one exercises the lane's own logic against a fake tinyfish module
+    (search→urls, highlights join, the beta fallback, all-failed, partial
+    failure, missing key, missing extra). No network, ever."""
+    import sys
+    import types as pytypes
+
+    from blend1 import lanes
+
+    class PermissionDeniedError(Exception):
+        pass
+
+    class _Snip:
+        def __init__(self, text):
+            self.text = text
+
+    class _SearchHit:
+        def __init__(self, url):
+            self.url = url
+
+    class _SearchResp:
+        def __init__(self, urls):
+            self.results = [_SearchHit(u) for u in urls]
+
+    class _FetchResult:
+        def __init__(self, url, title, text=None, highlights=None):
+            self.url, self.title = url, title
+            self.text, self.highlights = text, highlights
+
+    class _FetchErr:
+        def __init__(self, url, error):
+            self.url, self.error = url, error
+
+    class _FetchResp:
+        def __init__(self, results, errors):
+            self.results, self.errors = results, errors
+
+    def _install(fetch_impl):
+        """fetch_impl(highlights_requested: bool) -> _FetchResp (may raise)."""
+        mod = pytypes.ModuleType("tinyfish")
+        mod.__dict__["PermissionDeniedError"] = PermissionDeniedError
+        seen = {}
+
+        class _Search:
+            def query(self, q, *, purpose=None):
+                seen["query"] = q
+                return _SearchResp(["https://a.test/docs", "https://b.test/docs"])
+
+        class _Fetch:
+            def get_contents(self, urls, **kw):
+                seen["highlights"] = "highlights" in kw
+                return fetch_impl("highlights" in kw)
+
+        class _Client:
+            def __init__(self, api_key=None):
+                seen["key"] = bool(api_key)
+
+            search = _Search()
+            fetch = _Fetch()
+
+        mod.__dict__["TinyFish"] = _Client
+        monkeypatch.setitem(sys.modules, "tinyfish", mod)
+        return seen
+
+    monkeypatch.setenv("TINYFISH_API_KEY", "test-key")
+
+    # happy path: highlights are requested and joined per source
+    seen = _install(lambda hl: _FetchResp(
+        [_FetchResult("https://a.test/docs", "A", highlights=[_Snip("alpha 14"), _Snip("beta")]),
+         _FetchResult("https://b.test/docs", "B", highlights=[_Snip("gamma")])], []))
+    rep = lanes.web_lane("what is the a.test API?")
+    assert rep["status"] == "ok" and rep["n_results"] == 2
+    assert seen["highlights"] is True, "the lane requests highlights first"
+    assert rep["results"][0]["text"] == "alpha 14\nbeta"
+    assert rep["results"][0]["title"] == "A"
+    assert rep["errors"] == []
+
+    # beta denial: falls back to full text, capped to the excerpt budget
+    def _fallback(hl):
+        if hl:
+            raise PermissionDeniedError("highlights is beta")
+        return _FetchResp([_FetchResult("https://a.test/docs", None, text="x" * 5000)], [])
+
+    _install(_fallback)
+    rep = lanes.web_lane("what is the a.test API?")
+    assert rep["status"] == "ok"
+    assert len(rep["results"][0]["text"]) == lanes.WEB_EXCERPT_CHARS, "fallback text is capped"
+    assert rep["results"][0]["title"] == "(untitled)", "a None title is named, not rendered"
+
+    # every url failed → error naming the per-url reasons
+    _install(lambda hl: _FetchResp(
+        [], [_FetchErr("https://a.test/docs", "404"), _FetchErr("https://b.test/docs", "timeout")]))
+    rep = lanes.web_lane("what is the a.test API?")
+    assert rep["status"] == "error"
+    assert "a.test/docs: 404" in rep["error"] and "b.test/docs: timeout" in rep["error"]
+
+    # partial failure rides along — never silent
+    _install(lambda hl: _FetchResp(
+        [_FetchResult("https://a.test/docs", "A", highlights=[_Snip("alpha")])],
+        [_FetchErr("https://b.test/docs", "timeout")]))
+    rep = lanes.web_lane("what is the a.test API?")
+    assert rep["status"] == "ok" and rep["n_results"] == 1
+    assert rep["errors"] == [{"url": "https://b.test/docs", "error": "timeout"}]
+
+    # missing key → error naming it (checked before any client is built)
+    monkeypatch.delenv("TINYFISH_API_KEY")
+    rep = lanes.web_lane("anything")
+    assert rep["status"] == "error" and "TINYFISH_API_KEY" in rep["error"]
+
+    # missing extra → error naming the extra (None in sys.modules makes the
+    # import raise — the broad guard must catch it, not propagate)
+    monkeypatch.setitem(sys.modules, "tinyfish", None)
+    rep = lanes.web_lane("anything")
+    assert rep["status"] == "error" and "tinyfish extra" in rep["error"]
 

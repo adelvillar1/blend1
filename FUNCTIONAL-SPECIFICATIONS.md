@@ -125,6 +125,7 @@ The deterministic number check (code, not a model):
 | validate | `status="error"` (GLiDE down) → the answer ships **ungated**; a definitive fail triggers the retry; inconclusive escalates to the critic chain |
 | critics | all unreachable → `outcome="inconclusive"`, answer ships ungated with `escalated: true` |
 | voice | `status="error"` naming the missing extra; audio omitted |
+| web | `status="error"` naming the missing extra / `TINYFISH_API_KEY` / the fetch failures (per-url reasons in `web.errors`); sources omitted, the ask still answers |
 
 ## CLI
 
@@ -133,6 +134,7 @@ blend1 ask "What is the churn probability for customer 4471?" --table churn.csv 
 blend1 ask "Write a save email for customer 4471." --table churn.csv --target churned --json
 blend1 ask "Read this back to me." --voice          # spends money, on purpose
 blend1 ask "…" --no-retrieve                        # skip corpus retrieval
+blend1 ask "…" --live                                # force the web lane on (--no-live suppresses; default: the router decides via needs_live_facts)
 blend1 doctor                                       # per-lane availability, reasons named
 blend1 seed corpus.jsonl                            # [{"key":…,"text":…}, …]
 ```
@@ -150,7 +152,7 @@ service/.venv/bin/uvicorn service.main:app --port 8420
 | Method | Path | Body |
 |---|---|---|
 | `GET` | `/v1/health` | — → per-lane availability snapshot |
-| `POST` | `/v1/ask` | `{prompt, table?, target?, task_type?, voice?, retrieve?}` → BlendResult |
+| `POST` | `/v1/ask` | `{prompt, table?, target?, task_type?, voice?, retrieve?, live?}` → BlendResult |
 
 Set `BLEND1_BEARER_TOKEN` to require `Authorization: Bearer …` (health stays open,
 like sys1's service).

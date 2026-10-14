@@ -1,4 +1,4 @@
-"""The five lanes. Each lane is one function that returns a lane report and
+"""The six lanes. Each lane is one function that returns a lane report and
 never raises: a lane that cannot answer fails open with its reason recorded
 (house pattern — mirroring sys1's provider fail-open and sdm1's backend
 fail-open). The orchestrator composes the answer from the lanes that did
@@ -9,7 +9,8 @@ Lanes:
     semantic  — sem1 + local EmbeddingGemma-2 (llama-server :8901): prompt
                 embedding + corpus neighbors
     tabular   — sdm1 + Prior Labs TabPFN (hosted): exact predictions
-    generate  — Liquid LFM2-24B-A2B via OpenRouter: the only paid text leg
+    generate  — Liquid lfm2.5-24b-a2b via Liquid's own API: the only paid text leg
+    validate  — GLiDE rates the 24B's answer; inconclusive escalates to critics
     voice     — gen1 speak (optional; the media render of the final answer)
     web       — tinyfish search + fetch (optional; live sources as givens)
 """
@@ -327,10 +328,14 @@ def web_lane(prompt: str) -> dict:
     reason named (the house pattern)."""
     try:
         import tinyfish
-    except ImportError as e:
+    except Exception as e:
+        # Broad by design (the voice pattern): a broken SDK install can fail
+        # with more than ImportError (a pydantic v1/v2 conflict raises at
+        # import time), and a lane that raises takes down ask() itself.
         return {
             "status": "error",
-            "error": f"web lane needs the tinyfish extra (uv sync --extra web): {e}",
+            "error": f"web lane needs the tinyfish extra (uv sync --extra web, "
+            f"or pip install 'blend1[web]'): {e}",
         }
     api_key = os.environ.get("TINYFISH_API_KEY")
     if not api_key:
@@ -358,7 +363,11 @@ def web_lane(prompt: str) -> dict:
                 urls,
                 format="markdown",
                 ttl=0,
-                highlights={"query": prompt, "max_snippets": 3},
+                # max_characters bounds the snippets server-side; the
+                # no-highlights fallback below is bounded client-side to the
+                # same budget — either way the excerpt is capped.
+                highlights={"query": prompt, "max_snippets": 3,
+                            "max_characters": WEB_EXCERPT_CHARS},
             )
         except tinyfish.PermissionDeniedError:
             # highlights is beta: an account outside it is denied. Retry once
@@ -371,7 +380,7 @@ def web_lane(prompt: str) -> dict:
                 if r.highlights
                 else (r.text or "")[:WEB_EXCERPT_CHARS]
             )
-            results.append({"url": r.url, "title": r.title, "text": text})
+            results.append({"url": r.url, "title": r.title or "(untitled)", "text": text})
         if not results:
             errors = "; ".join(f"{e.url}: {e.error}" for e in fetched.errors)
             return {
@@ -379,11 +388,15 @@ def web_lane(prompt: str) -> dict:
                 "error": f"tinyfish fetch failed for all {len(urls)} urls: {errors}",
                 "provider": "tinyfish",
             }
+        # Partial degradation is named, never silent (house rule): per-url
+        # fetch failures ride alongside the successes.
+        fetch_errors = [{"url": e.url, "error": e.error} for e in fetched.errors]
         return {
             "status": "ok",
             "provider": "tinyfish",
             "results": results,
             "n_results": len(results),
+            "errors": fetch_errors,
             "latency_ms": int((time.monotonic() - t0) * 1000),
         }
     except Exception as e:
