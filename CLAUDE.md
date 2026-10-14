@@ -74,9 +74,10 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
 
 ---
 
-## Today's state (2026-10-13)
+## Today's state (2026-10-14)
 
-- v0.1.0 committed (`34b4126` + `.gitignore`). 15/15 offline tests green, ruff clean.
+- **v0.3 web lane shipped 2026-10-14** (plan `2026-10-14-blend1-web-lane`, completed): a sixth lane — tinyfish search+fetch (free; `blend1[web]` extra, `TINYFISH_API_KEY` in `~/.config/blend1/env`) — injects live sources as givens with url provenance. Lane selection is the router's: d1's `blend_route` gained a `needs_live_facts` noul head (floor 0.70 UNFITTED, logged per ask); `ask(live=True/False)` force/suppresses. Live-verified: docs ask auto-fired web (0.881, direct path, 3 sources, $0 generate spend), churn ask suppressed (0.321); 23/23 offline tests, ruff clean. Orchestrator is now route-first; web facts join the number-check givens and the S2 prompt as untrusted reference data.
+- v0.1.0 committed (`34b4126` + `.gitignore`). Offline suite green (15/15 at v0.1.0; 23/23 at v0.3), ruff clean.
 - **All four model lanes live-verified end-to-end**: d1 routes (0.002 direct / 0.978
   synthesized on the probe prompts), EmbeddingGemma-2 retrieves (768d, 60–110ms, churn
   prompt → churn-playbook cos 0.771), TabPFN returns real predictions (p=0.924 churn,
