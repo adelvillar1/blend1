@@ -101,8 +101,9 @@ def route_lane(prompt: str) -> dict:
 # ── semantic lane: sem1 + local EmbeddingGemma-2 ─────────────────────────────
 
 
-def semantic_lane(prompt: str, *, retrieve: bool = True) -> dict:
-    """Embed the prompt; optionally retrieve corpus neighbors."""
+def semantic_lane(prompt: str, *, retrieve: bool = True, project: str | None = None) -> dict:
+    """Embed the prompt; optionally retrieve corpus neighbors from the
+    resolved project's store."""
     try:
         import sem1
     except Exception as e:  # pragma: no cover - sem1 is a hard dep
@@ -121,7 +122,7 @@ def semantic_lane(prompt: str, *, retrieve: bool = True) -> dict:
         if retrieve:
             from .corpus import retrieve as corpus_retrieve
 
-            neighbors = corpus_retrieve(res.vectors[0])
+            neighbors = corpus_retrieve(res.vectors[0], project=project)
             out["neighbors"] = neighbors
         return out
     except Exception as e:

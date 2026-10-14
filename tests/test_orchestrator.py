@@ -19,7 +19,7 @@ def _ok_route(ng: float, shape: str = "synthesized", needs_live_facts: float = 0
     return _lane
 
 
-def _ok_semantic(prompt, *, retrieve=True):
+def _ok_semantic(prompt, *, retrieve=True, project=None):
     return {
         "status": "ok",
         "dims": 768,

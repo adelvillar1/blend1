@@ -34,6 +34,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import lanes, telemetry
+from .corpus import resolve_project
 from .types import BlendResult, prompt_sha256
 
 DIRECT_SHAPE = "direct"
@@ -150,6 +151,7 @@ def ask(
     voice: bool = False,
     retrieve: bool = True,
     live: bool | None = None,
+    project: str | None = None,
     log: bool = True,
     _lane_overrides: dict | None = None,
 ) -> BlendResult:
@@ -165,6 +167,10 @@ def ask(
         voice: also render the final answer with gen1 speak (spends money).
         retrieve: retrieve semantic corpus neighbors (default True).
         live: force (True) / suppress (False) / auto — router decides (None, default)
+        project: which corpus project the semantic lane retrieves from —
+            explicit param > BLEND1_PROJECT env > cwd git-repo basename >
+            None (the legacy store). Resolved once here and threaded to the
+            semantic lane.
         log: append the redacted JSONL row (default True).
         _lane_overrides: test seam — {lane_name: callable} replaces a lane.
     """
@@ -176,6 +182,11 @@ def ask(
     gen_fn = ov.get("generate", lanes.generate_lane)
     web_fn = ov.get("web", lanes.web_lane)
     voice_fn = ov.get("voice", lanes.voice_lane)
+
+    # The project resolves ONCE per ask (param > BLEND1_PROJECT > cwd repo
+    # basename > None/legacy) so every lane sees the same resolution — the
+    # semantic lane reads that project's store, not another's.
+    resolved_project = resolve_project(project)
 
     # ── route runs SOLO first — the front door that decides which lanes run ──
     route = route_fn(prompt)
@@ -197,7 +208,9 @@ def ask(
     # ── fact pool (semantic + tabular + web) run concurrently ──
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {
-            "semantic": pool.submit(sem_fn, prompt, retrieve=retrieve),
+            "semantic": pool.submit(
+                sem_fn, prompt, retrieve=retrieve, project=resolved_project
+            ),
         }
         if table is not None:
             if not target:

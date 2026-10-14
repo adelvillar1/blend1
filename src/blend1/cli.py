@@ -1,9 +1,13 @@
-"""blend1 CLI: ask / doctor / seed.
+"""blend1 CLI: ask / doctor / seed / search / refresh / corpus.
 
     blend1 ask "what should we do about customer 4471?" --table churn.csv --target churned
     blend1 ask "write a save email for customer 4471" --json
     blend1 doctor
     blend1 seed corpus.jsonl        # [{"key":..., "text":...}, ...]
+    blend1 search "churn playbook" --project blend1
+    blend1 refresh --project blend1            # docs-derived, hash-checked
+    blend1 corpus migrate-legacy blend1        # move the legacy store under a project
+
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ import argparse
 import csv
 import json
 import sys
+
+_PROJECT_HELP = "corpus project (default: $BLEND1_PROJECT or the cwd repo name)"
 
 
 def _read_csv(path: str) -> list[dict]:
@@ -32,12 +38,32 @@ def main(argv: list[str] | None = None) -> int:
     p_ask.add_argument("--no-retrieve", action="store_true", help="skip semantic corpus retrieval")
     p_ask.add_argument("--live", action="store_true", help="force the web lane on regardless of the router")
     p_ask.add_argument("--no-live", action="store_true", help="suppress the web lane regardless of the router")
+    p_ask.add_argument("--project", help=_PROJECT_HELP)
     p_ask.add_argument("--json", action="store_true", help="print the full BlendResult")
 
     sub.add_parser("doctor", help="per-lane availability snapshot")
 
     p_seed = sub.add_parser("seed", help="seed the semantic corpus")
     p_seed.add_argument("file", help="JSONL of {\"key\":..., \"text\":...} items")
+    p_seed.add_argument("--project", help=_PROJECT_HELP)
+
+    p_search = sub.add_parser("search", help="semantic search over a project's corpus")
+    p_search.add_argument("query")
+    p_search.add_argument("--project", help=_PROJECT_HELP)
+    p_search.add_argument("--k", type=int, default=3, help="neighbors to return (default 3)")
+    p_search.add_argument("--json", action="store_true", help="print the full result list as JSON")
+
+    p_refresh = sub.add_parser("refresh", help="re-derive the corpus from docs; rebuild only when changed")
+    p_refresh.add_argument("--project", help=_PROJECT_HELP)
+    p_refresh.add_argument("--from", dest="sources", nargs="*", default=None,
+                           help="explicit source files/globs (replaces the default docs set)")
+
+    p_corpus = sub.add_parser("corpus", help="corpus maintenance")
+    corpus_sub = p_corpus.add_subparsers(dest="corpus_cmd", required=True)
+    p_migrate = corpus_sub.add_parser(
+        "migrate-legacy", help="move the legacy store under a project (idempotent)"
+    )
+    p_migrate.add_argument("project")
 
     args = ap.parse_args(argv)
 
@@ -55,8 +81,36 @@ def main(argv: list[str] | None = None) -> int:
             for line in f:
                 if line.strip():
                     items.append(json.loads(line))
-        print(json.dumps(blend1.seed_corpus(items), indent=2))
+        print(json.dumps(blend1.seed_corpus(items, project=args.project), indent=2))
         return 0
+
+    if args.cmd == "search":
+        import blend1
+
+        results = blend1.search(args.query, project=args.project, k=args.k)
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            if not results:
+                print("(no neighbors)", file=sys.stderr)
+            for r in results:
+                print(f"{r['score']:.4f}  {r['key']}")
+                print("\n".join(f"    {line}" for line in r["text"].splitlines()))
+        return 0
+
+    if args.cmd == "refresh":
+        import blend1
+
+        report = blend1.refresh_corpus(project=args.project, sources=args.sources)
+        print(json.dumps(report, indent=2))
+        return 0
+
+    if args.cmd == "corpus":
+        from blend1.corpus import migrate_legacy
+
+        if args.corpus_cmd == "migrate-legacy":
+            print(json.dumps(migrate_legacy(args.project), indent=2))
+            return 0
 
     # ask
     import blend1
@@ -76,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         voice=args.voice,
         retrieve=not args.no_retrieve,
         live=live,
+        project=args.project,
     )
     if args.json:
         print(json.dumps(result.as_dict(), indent=2, default=str))

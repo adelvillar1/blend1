@@ -41,12 +41,12 @@ gate + retry cycle, and the log row.
 |---|---|
 | `orchestrator.py` | `ask()` — parallel lanes, route gate, merge, telemetry row |
 | `lanes.py` | `route_lane`, `semantic_lane`, `tabular_lane`, `generate_lane`, `validate_lane`, `escalate_lane`, `voice_lane`, `web_lane`, `lane_report()` |
-| `corpus.py` | `seed()` / `retrieve()` — sem1 VectorStore under `~/.local/share/blend1/vectors/` |
+| `corpus.py` | `seed()` / `retrieve()` / `search()` / `refresh()` / `derive_items()` — per-project sem1 VectorStore under `~/.local/share/blend1/vectors/` |
 | `types.py` | `BlendResult` + `RESULT_KEYS` (additive contract) |
 | `env.py` | key-file loading, setdefault across four files |
 | `telemetry.py` | redacted JSONL row writer |
-| `cli.py` | `blend1 ask\|doctor\|seed` |
-| `service/main.py` | FastAPI: `POST /v1/ask`, `GET /v1/health` (port 8420) |
+| `cli.py` | `blend1 ask\|doctor\|seed\|search\|refresh\|corpus` |
+| `service/main.py` | FastAPI: `POST /v1/ask`, `POST /v1/search`, `GET /v1/health` (port 8420) |
 
 ## Lane wires (all verified live 2026-10-13)
 
@@ -177,6 +177,71 @@ Chain (both wired from the Hermes agent config, both verified live):
   blocks (fail-open).
 - Per-critic env overrides: `BLEND1_CRITIC_<N>_BASE` / `_MODEL` / `_KEY_ENV`.
 
+## Semantic corpus — per-project stores
+
+Layout under the store root (`BLEND1_VECTORS_DIR`, default
+`~/.local/share/blend1/vectors/`):
+
+```
+<root>/<slug>/…            the legacy store — project None or "default"
+<root>/<project>/<slug>/…  a named project's store (slug: embeddinggemma-2)
+```
+
+`<slug>/` holds sem1's VectorStore: `manifest.json` + `vectors.bin` (packed
+float32 rows). Manifest entries are `{"key", "sha256", "text"}` — the sha256
+is the first 16 hex of the chunk text (the staleness hash) and the text
+rides in the manifest (a local corpus, never telemetry).
+
+**Project resolution** (`corpus.resolve_project(explicit)`, one order, no
+cwd-name guessing): explicit param → `BLEND1_PROJECT` env → basename of
+`git rev-parse --show-toplevel` in the cwd → `None` (the legacy store). A
+non-repo cwd resolves to `None` — legacy behavior, never a guess from the
+directory name. `ask()` resolves once and threads the result to the
+semantic lane; `seed`/`retrieve`/`search`/`refresh` resolve per call. So a
+bare `seed(items)` from inside a repo writes that repo's project store;
+`project="default"` (or a non-repo cwd) is the legacy store.
+
+**Docs-derived refresh** (`blend1 refresh [--project X] [--from PATH ...]`,
+`corpus.refresh()`): derives items from the default source set — every
+`docs/**/*.md` plus root `CLAUDE.md`, `TECHNICAL-DOCUMENTATION.md`,
+`FUNCTIONAL-SPECIFICATIONS.md` when present — or from explicit files/globs,
+which replace the default. `.md`-only by construction, and
+`CLAUDE.local.md` is never in the set (it carries key values; other
+processes read these stores). Chunking (v1, tunable): split each file on
+`^## ` headings; key = `<relpath>#<heading>`, text = heading line + section
+body capped at 2,000 chars; a non-empty preamble before the first `##` is
+one entry keyed `<relpath>#(preamble)`. Items are sorted by (relpath,
+heading) — deterministic.
+
+**Staleness**: each derived text is hashed (sha256[:16], the same scheme as
+`seed`) and the (key, hash) set is compared against the store manifest.
+Same → no write (steady-state warmup is file reads + hashes, milliseconds,
+no embedding). Differ → full rebuild via the same embed+rebuild path as
+`seed` (sem1 rebuild is whole-store, atomic tmp+rename). Report:
+`{project, source_files, items, changed, action: "rebuilt"|"unchanged"|
+"no-source", store}` — an empty/missing source set is `no-source` and
+creates no store.
+
+**Search surfaces**: `corpus.search(query, k=3)` (embed + cosine top-k →
+`[{key, score, text}]`), `blend1 search "<query>" [--project X] [--k N]
+[--json]`, and `POST /v1/search` with `{project?, query, k=3}` →
+`{project, query, results, latency_ms}`. Retrieval on an unseeded store
+returns `[]` cleanly; an unreachable embedding server raises from `search`
+(a direct call, not a lane) and the CLI/service reports it.
+
+**Non-blend1 readers** read the store directly — plain files under a
+documented path, no new service: read
+`<root>/<project>/<slug>/manifest.json` for the `{key, sha256, text}`
+entries and `vectors.bin` (float32 rows, `dims` from the manifest), embed
+the query against the same local llama-server :8901, cosine top-k. The
+embedding server is shared local HTTP, so any process on the machine can
+query a project's corpus.
+
+**Legacy migration** (`blend1 corpus migrate-legacy <project>`): moves
+`<root>/<slug>/` → `<root>/<project>/<slug>/` when the legacy path exists
+and the target doesn't; idempotent no-op otherwise. Optional — the smoke
+script self-seeds, so nothing depends on it.
+
 ## BlendResult (public wire contract)
 
 ```json
@@ -234,7 +299,8 @@ if a lane leaks them.
 | `DASHSCOPE_API_KEY` / `STEPFUN_API_KEY` | voice (via gen1) | — |
 | `TINYFISH_API_KEY` | web (search + fetch) | — |
 | `BLEND1_LOG_DIR` | telemetry | `~/.local/share/blend1/logs` |
-| `BLEND1_VECTORS_DIR` | corpus store | `~/.local/share/blend1/vectors` |
+| `BLEND1_VECTORS_DIR` | corpus store root | `~/.local/share/blend1/vectors` |
+| `BLEND1_PROJECT` | corpus project resolution | unset (cwd repo basename → None) |
 | `BLEND1_BEARER_TOKEN` | service auth | unset (open — private network only) |
 
 Env files load setdefault in order: `~/.config/blend1/env` → `~/.config/sdm1/env` →
@@ -243,7 +309,10 @@ which key lives where.
 
 ## Testing
 
-- `uv run --extra dev pytest` — 8 offline tests with stub lanes (routing merge,
-  direct-path skip, fail-open composition, router-down bias toward synthesis).
+- `uv run --extra dev pytest` — 40 offline tests: stub lanes (routing merge,
+  direct-path skip, fail-open composition, router-down bias toward
+  synthesis) plus the corpus suite (project resolution order, store
+  isolation, docs-derived refresh staleness, legacy migration, search) run
+  against a deterministic fake embedder with real VectorStores in tmp dirs.
 - `uv run python scripts/smoke_live.py` — live: doctor + corpus seed + three asks
   (direct, synthesized, tabular). Every lane that can answer, answers for real.

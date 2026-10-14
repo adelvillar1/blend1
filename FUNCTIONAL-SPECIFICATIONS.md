@@ -22,6 +22,7 @@ judges the ask needs open-ended synthesis.
 | `voice` | bool | also render the final answer to audio via gen1 (default False — spends money) |
 | `retrieve` | bool | retrieve semantic corpus neighbors (default True) |
 | `live` | bool \| null | force (`true`) / suppress (`false`) the web lane; `null` (default) lets the router's `needs_live_facts` noul decide |
+| `project` | str \| null | which corpus project the semantic lane retrieves from — explicit param > `BLEND1_PROJECT` env > cwd git-repo basename > `null` (the legacy store); resolved once per ask |
 | `log` | bool | append the redacted JSONL row (default True) |
 
 ### Routing decision (the cost gate)
@@ -137,10 +138,30 @@ blend1 ask "…" --no-retrieve                        # skip corpus retrieval
 blend1 ask "…" --live                                # force the web lane on (--no-live suppresses; default: the router decides via needs_live_facts)
 blend1 doctor                                       # per-lane availability, reasons named
 blend1 seed corpus.jsonl                            # [{"key":…,"text":…}, …]
+blend1 search "churn playbook" --project blend1     # semantic neighbors: score + key + text
+blend1 refresh --project blend1                     # docs-derived refresh; JSON report
+blend1 corpus migrate-legacy blend1                 # move the legacy store under a project
 ```
 
 `--json` prints the full BlendResult. Without it, stdout is the final answer and a
 stderr line notes escalation when a lane failed open.
+
+## Per-project corpora
+
+Each project's semantic corpus is its own store (`<vectors root>/<project>/`),
+so any process can read a project's facts without touching another project's;
+project `null`/`"default"` is the legacy global store. The project resolves
+once per `ask()` — explicit `project` param → `BLEND1_PROJECT` env → cwd
+git-repo basename → `null` (legacy; a non-repo cwd never guesses from the
+directory name).
+
+`blend1 refresh [--project X] [--from PATH ...]` re-derives a project's
+corpus from its docs (`docs/**/*.md` plus the root contract docs by default;
+`--from` replaces that set) and rebuilds only when the text hashes changed —
+steady state costs file reads only. `CLAUDE.local.md` is excluded from the
+source set by construction (it carries key values; other processes read
+these stores). `blend1 search` and `POST /v1/search` query a project's
+corpus, returning `{key, score, text}` per neighbor.
 
 ## HTTP service
 
@@ -153,6 +174,7 @@ service/.venv/bin/uvicorn service.main:app --port 8420
 |---|---|---|
 | `GET` | `/v1/health` | — → per-lane availability snapshot |
 | `POST` | `/v1/ask` | `{prompt, table?, target?, task_type?, voice?, retrieve?, live?}` → BlendResult |
+| `POST` | `/v1/search` | `{project?, query, k?}` → `{project, query, results, latency_ms}` |
 
 Set `BLEND1_BEARER_TOKEN` to require `Authorization: Bearer …` (health stays open,
 like sys1's service).
