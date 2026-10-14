@@ -47,13 +47,13 @@ paste key values into commits, docs, or chat.
 
 **Code map** (all under `src/blend1/`)
 - `orchestrator.py` — `ask()`: parallel lanes, merge, route, telemetry
-- `lanes.py` — the five lane callables + `lane_report()` (doctor)
-- `corpus.py` — semantic memory (sem1 VectorStore, top-k cosine)
+- `lanes.py` — the six lane callables + `lane_report()` (doctor)
+- `corpus.py` — semantic memory: per-project stores (`vectors/<project>/`, legacy root aliased), docs-derived `refresh` (hash-checked staleness), `search`
 - `types.py` — `BlendResult` wire contract
 - `env.py` — key-file loading (`~/.config/blend1/env` → `sdm1/env` → `dev-decisions/env` → `gen1/env`)
 - `telemetry.py` — redacted JSONL log
-- `cli.py` — `blend1 ask|doctor|seed`
-- `service/main.py` — FastAPI wrapper (`/v1/ask`, `/v1/health`, port 8420)
+- `cli.py` — `blend1 ask|doctor|seed|search|refresh|corpus`
+- `service/main.py` — FastAPI wrapper (`/v1/ask`, `/v1/search`, `/v1/health`, port 8420)
 
 **Sibling lanes** (path dependencies, editable): `../sys1`, `../sem1`, `../sdm1`, `../gen1`
 
