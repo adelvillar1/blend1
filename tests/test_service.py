@@ -30,6 +30,16 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_bearer(monkeypatch):
+    """The suite's greenness must not depend on the developer's shell: an
+    ambient BLEND1_BEARER_TOKEN (a shell profile, the kit README's advice)
+    would 401 every test that posts without a header. Cleared here; the
+    bearer tests set their own on the same monkeypatch."""
+    monkeypatch.delenv("BLEND1_BEARER_TOKEN", raising=False)
+    monkeypatch.setattr(service_main, "TOKEN", None, raising=False)
+
+
 def _result(**overrides) -> blend1.BlendResult:
     """A synthesized ask that passed its gate, with a measured cost — the
     happy-path shape the endpoint lifts its `blend1` field from."""
@@ -220,6 +230,55 @@ def test_the_module_level_token_binds_too(client, monkeypatch):
     ok = client.post(URL, json=body, headers={"authorization": "Bearer snapshot-token"})
     assert ok.status_code == 200
     assert client.post(URL, json=body).status_code == 401
+
+
+# ── the envelope that cannot form an ask ──
+
+
+def test_an_empty_envelope_is_refused_before_any_spend(client, monkeypatch):
+    """An empty messages list would render to an empty prompt and run the
+    whole blend on nothing — and can clear the route floor into the paid leg.
+    It is a 400, and ask() is never called."""
+    seen: dict = {}
+    _install_ask(monkeypatch, _result(), seen)
+
+    r = client.post(URL, json={"model": "blend1", "messages": []})
+    assert r.status_code == 400
+    assert "empty" in r.json()["detail"]
+    assert seen == {}, "no ask was spent on an envelope that carries none"
+
+
+def test_a_non_string_content_part_is_refused(client, monkeypatch):
+    """Multimodal content parts would stringify a Python repr into the prompt
+    — garbage-in with a 200, invisible to the caller. The blend's ask is one
+    text prompt; a non-string part is a 400, named."""
+    seen: dict = {}
+    _install_ask(monkeypatch, _result(), seen)
+
+    r = client.post(URL, json={"model": "blend1", "messages": [{"role": "user", "content": ["a", "b"]}]})
+    assert r.status_code == 400
+    assert "string" in r.json()["detail"]
+    assert seen == {}, "no ask was spent on a prompt that cannot be formed"
+
+
+def test_an_ambient_token_refuses_a_headerless_post(client, monkeypatch):
+    """The regression the autouse fixture exists for: a token in the ambient
+    environment guards every post — the suite stays green because every other
+    test clears it, and this one proves the guard fires when it is set."""
+    _install_ask(monkeypatch, _result(), {})
+    monkeypatch.setenv("BLEND1_BEARER_TOKEN", "ambient-token")
+
+    r = client.post(URL, json={"model": "blend1", "messages": MESSAGES})
+    assert r.status_code == 401
+
+
+def test_the_scheme_match_is_case_insensitive(client, monkeypatch):
+    """RFC 7235: the auth scheme is case-insensitive."""
+    _install_ask(monkeypatch, _result(), {})
+    monkeypatch.setenv("BLEND1_BEARER_TOKEN", "s3cret-token")
+
+    r = client.post(URL, json={"model": "blend1", "messages": MESSAGES}, headers={"authorization": "bearer s3cret-token"})
+    assert r.status_code == 200
 
 
 # ── the rest of the surface is unchanged ──

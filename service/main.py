@@ -25,13 +25,16 @@ nothing it had before; a client that wants the verdict gets all of it.
 The endpoint never 500s and never retries or reroutes: ask() fails open, so an
 empty answer is a 200 with content "" and the reason in the `blend1` field,
 and a gate that did not pass is a 200 with the answer shipping flagged — a
-flag is information, an outage is an outage. The only non-200 is a 401 on a
-bad bearer, and only when BLEND1_BEARER_TOKEN is set.
+flag is information, an outage is an outage. The non-200s are a 401 on a bad
+bearer (only when BLEND1_BEARER_TOKEN is set) and a 400 on an envelope that
+cannot form an ask (empty messages, non-string content) — refused before any
+spend, because the blend's ask is one text prompt.
 
 """
 
 from __future__ import annotations
 
+import hmac
 import os
 
 from fastapi import FastAPI, Header, HTTPException
@@ -84,12 +87,16 @@ def _render_prompt(messages: list[dict]) -> str:
 def _authorized(authorization: str | None) -> bool:
     """The service's optional bearer, the module-level TOKEN's own pattern:
     unset = localhost-open, set = required on every call. The live environment
-    wins over the import-time snapshot, so a token configured after start (or
-    by a test) still binds."""
+    is read per call, so a token configured in-process (or by a test) binds;
+    a running process's environ otherwise changes only from inside. The scheme
+    match is case-insensitive (RFC 7235) and the comparison constant-time."""
     expected = os.environ.get("BLEND1_BEARER_TOKEN") or TOKEN
     if not expected:
         return True
-    return authorization == f"Bearer {expected}"
+    if not authorization:
+        return False
+    scheme, _, value = authorization.partition(" ")
+    return scheme.lower() == "bearer" and hmac.compare_digest(value, expected)
 
 
 @app.get("/v1/health")
@@ -124,6 +131,21 @@ def chat_completions(payload: ChatPayload, authorization: str | None = Header(de
 
     if not _authorized(authorization):
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+
+    # A request that cannot form an ask is refused before any spend: an empty
+    # envelope would render to an empty prompt and run the whole blend on
+    # nothing (and can clear the route floor into the paid leg), and a
+    # non-string content part would stringify a Python repr into the prompt.
+    # The blend's ask is one text prompt; malformed input is a 400, named.
+    if not payload.messages:
+        raise HTTPException(status_code=400, detail="messages is empty — the chat envelope carries no ask")
+    for m in payload.messages:
+        content = m.get("content")
+        if content is not None and not isinstance(content, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"message content must be a string; got {type(content).__name__} — the blend's ask is one text prompt",
+            )
 
     # ask() never raises: a lane that could not answer rides its reason inside
     # the BlendResult, so the endpoint has no error branch of its own — an

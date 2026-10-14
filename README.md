@@ -153,8 +153,11 @@ the answer, never instead of it:
 The endpoint **never 500s and never retries or reroutes**: `ask()` fails open, so
 an empty answer is a `200` with content `""` and the reason in the `blend1`
 field, and a gate that did not pass is a `200` with the answer shipping flagged —
-a flag is information, an outage is an outage. The only non-200 is a `401` on a
-bad bearer, and only when `BLEND1_BEARER_TOKEN` is set (unset = localhost-open).
+a flag is information, an outage is an outage. The non-200s are a `401` on a bad
+bearer (only when `BLEND1_BEARER_TOKEN` is set; unset = localhost-open) and a
+`400` on an envelope that cannot form an ask — empty `messages`, or a non-string
+content part — refused before any spend, because the blend's ask is one text
+prompt.
 
 Two optional extensions to the envelope: `"model"` (echoed back, defaults to
 `"blend1"`) and `"blend1_project"` — which corpus project the ask resolves
