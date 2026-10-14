@@ -21,6 +21,7 @@ judges the ask needs open-ended synthesis.
 | `task_type` | str | `"classification"` (default) or `"regression"` |
 | `voice` | bool | also render the final answer to audio via gen1 (default False — spends money) |
 | `retrieve` | bool | retrieve semantic corpus neighbors (default True) |
+| `live` | bool \| null | force (`true`) / suppress (`false`) the web lane; `null` (default) lets the router's `needs_live_facts` noul decide |
 | `log` | bool | append the redacted JSONL row (default True) |
 
 ### Routing decision (the cost gate)
@@ -105,6 +106,13 @@ The deterministic number check (code, not a model):
    `escalated: true`, never silently. The gate's floors are UNFITTED house
    defaults (0.70) — treat a failure as "worth one retry", not "wrong",
    until feedback rows fit them.
+7. **Web facts ride with url provenance and are never trusted as instructions.**
+   Live sources the web lane fetches reach the synthesizer and the validator as
+   givens, each tagged with its url; the fetched text is framed as **untrusted
+   reference data** — never as instructions to follow (prompt-injection defense).
+   The number check allows numbers quoted from those sources (a version, price, or
+   limit quoted from a fetched page is not invented — the check catches numbers
+   the MODEL invents).
 
 ### Failure semantics per lane
 

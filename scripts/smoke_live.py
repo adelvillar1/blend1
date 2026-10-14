@@ -38,7 +38,15 @@ def _show(r) -> None:
         f"numbers={v.get('number_check')} critic={v.get('critic')}"
         if v else "gate=not-run (direct path)"
     )
-    print(f"path={d['path']} {gate} escalated={r.escalated} "
+    web = d.get("web") or {}
+    if web.get("status") == "ok":
+        urls = ", ".join(res.get("url", "?") for res in web.get("results", []))
+        web_line = f"web={web.get('n_results')} sources ({web.get('latency_ms')}ms): {urls}"
+    elif web:
+        web_line = f"web=error: {web.get('error')}"
+    else:
+        web_line = "web=not-fired"
+    print(f"path={d['path']} {gate} {web_line} escalated={r.escalated} "
           f"latency={d['total_latency_ms']}ms")
     print(d["final_answer"][:600])
 
@@ -69,6 +77,18 @@ def main() -> int:
     print("\n== ask [full blend + validation gate: facts-relevant synthesis] ==")
     _show(blend1.ask(
         "Based on this customer data, what should we do about customer 4471?",
+        table=TABLE, target="churned", log=False,
+    ))
+
+    print("\n== ask [web lane AUTO-FIRED: live docs question, no flag] ==")
+    _show(blend1.ask(
+        "What is the current MapLibre GL JS 3D terrain API?",
+        log=False,
+    ))
+
+    print("\n== ask [web SUPPRESSED: churn ask, no live facts needed] ==")
+    _show(blend1.ask(
+        "What is the churn probability for customer 4471?",
         table=TABLE, target="churned", log=False,
     ))
     return 0

@@ -30,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ask.add_argument("--task-type", default="classification")
     p_ask.add_argument("--voice", action="store_true", help="also render the answer with gen1 speak")
     p_ask.add_argument("--no-retrieve", action="store_true", help="skip semantic corpus retrieval")
+    p_ask.add_argument("--live", action="store_true", help="force the web lane on regardless of the router")
+    p_ask.add_argument("--no-live", action="store_true", help="suppress the web lane regardless of the router")
     p_ask.add_argument("--json", action="store_true", help="print the full BlendResult")
 
     sub.add_parser("doctor", help="per-lane availability snapshot")
@@ -65,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     # CSV cells arrive as strings; let sdm1's coercion handle booleans/numbers
     # by round-tripping through its own reader semantics.
+    live = True if args.live else (False if args.no_live else None)
     result = blend1.ask(
         args.prompt,
         table=table,
@@ -72,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         task_type=args.task_type,
         voice=args.voice,
         retrieve=not args.no_retrieve,
+        live=live,
     )
     if args.json:
         print(json.dumps(result.as_dict(), indent=2, default=str))

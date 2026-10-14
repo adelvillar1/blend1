@@ -37,6 +37,13 @@ dev = [
 voice = [
     "gen1",
 ]
+# The web lane searches + fetches live sources via TinyFish (search + fetch).
+# Marker: the SDK requires Python >=3.11 while blend1's core targets >=3.10;
+# on 3.10 the extra installs nothing and the lane fails open naming blend1[web]
+# (the voice pattern), so resolution stays satisfiable across the whole range.
+web = [
+    "tinyfish>=0.9.0; python_version >= '3.11'",
+]
 service = [
     "fastapi>=0.110",
     "uvicorn>=0.27",

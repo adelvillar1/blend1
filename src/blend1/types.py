@@ -4,7 +4,8 @@ Contract rule (house pattern): result keys are only ever ADDED. Renaming or
 removing a key below is a breaking change and needs a plan.
 
 Every lane reports itself: `route`, `semantic`, `tabular`, `generated`,
-`voice` each carry their own telemetry and their own error. A lane that
+`validation`, `voice`, `web` each carry their own telemetry and their own
+error. A lane that
 could not answer never breaks the blend — it fails open with its reason
 recorded, and the orchestrator composes the best answer from the lanes that
 did answer (mirroring sys1/sdm1 fail-open).
@@ -26,6 +27,7 @@ RESULT_KEYS = (
     "generated",
     "validation",
     "voice",
+    "web",
     "final_answer",
     "total_latency_ms",
 )
@@ -46,6 +48,7 @@ class BlendResult:
     generated: dict = field(default_factory=dict)
     validation: dict = field(default_factory=dict)
     voice: dict = field(default_factory=dict)
+    web: dict = field(default_factory=dict)
     final_answer: str = ""
     total_latency_ms: int = 0
 
@@ -60,6 +63,7 @@ class BlendResult:
             "generated": dict(self.generated),
             "validation": dict(self.validation),
             "voice": dict(self.voice),
+            "web": dict(self.web),
             "final_answer": self.final_answer,
             "total_latency_ms": self.total_latency_ms,
         }
@@ -73,7 +77,7 @@ class BlendResult:
         lanes_errored = any(
             lane.get("status") == "error"
             for lane in (self.route, self.semantic, self.tabular, self.generated,
-                         self.validation, self.voice)
+                         self.validation, self.voice, self.web)
             if lane
         )
         gate_failed = bool(

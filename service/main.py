@@ -24,6 +24,7 @@ class AskPayload(BaseModel):
     task_type: str = "classification"
     voice: bool = False
     retrieve: bool = True
+    live: bool | None = None
 
 
 @app.get("/v1/health")
@@ -44,5 +45,6 @@ def ask(payload: AskPayload):
         task_type=payload.task_type,
         voice=payload.voice,
         retrieve=payload.retrieve,
+        live=payload.live,
     )
     return result.as_dict()

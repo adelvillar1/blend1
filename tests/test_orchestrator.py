@@ -11,9 +11,10 @@ import pytest
 from blend1.orchestrator import ask
 
 
-def _ok_route(ng: float, shape: str = "synthesized"):
+def _ok_route(ng: float, shape: str = "synthesized", needs_live_facts: float = 0.0):
     def _lane(prompt):
-        return {"status": "ok", "needs_generation": ng, "answer_shape": shape, "latency_ms": 10}
+        return {"status": "ok", "needs_generation": ng, "answer_shape": shape,
+                "needs_live_facts": needs_live_facts, "latency_ms": 10}
 
     return _lane
 
@@ -43,18 +44,39 @@ def _err_tabular(table, *, target, task_type="classification"):
     return {"status": "error", "error": "tabpfn-hosted backend is not configured: set TABPFN_API_KEY", "model": "tabpfn-hosted"}
 
 
-def _ok_generate(prompt, *, tabular_facts="", semantic_facts="", feedback=""):
+def _ok_generate(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
     assert "0.842" in tabular_facts, "the S2 prompt must carry the exact TabPFN number"
     assert "doc-1" in semantic_facts, "the S2 prompt must carry the semantic neighbors"
     return {"status": "ok", "model": "lfm2.5-24b-a2b", "text": "Dear customer 4471, ...", "usage": {"total_tokens": 412}}
 
 
-def _err_generate(prompt, *, tabular_facts="", semantic_facts=""):
+def _err_generate(prompt, *, tabular_facts="", semantic_facts="", web_facts=""):
     return {"status": "error", "error": "generate lane is not configured: set LIQUID_API_KEY (the same key the d1 lane uses) in ~/.config/blend1/env", "model": "lfm2.5-24b-a2b"}
 
 
-def _echo_generate(prompt, *, tabular_facts="", semantic_facts="", feedback=""):
+def _echo_generate(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
     return {"status": "ok", "model": "lfm2.5-24b-a2b", "text": "echo: " + prompt, "usage": {"total_tokens": 10}}
+
+
+def _ok_web(prompt):
+    return {
+        "status": "ok",
+        "provider": "tinyfish",
+        "results": [{
+            "url": "https://maplibre.org/docs",
+            "title": "3D Terrain - MapLibre",
+            "text": "terrain source accepts quantized-mesh; hillshade is the default",
+        }],
+        "n_results": 1,
+        "latency_ms": 800,
+    }
+
+
+def _err_web(prompt):
+    return {
+        "status": "error",
+        "error": "web lane is not configured: set TINYFISH_API_KEY in ~/.config/blend1/env",
+    }
 
 
 # ── validation-gate stubs ──
@@ -80,7 +102,7 @@ def _gate_error(state, *, givens=""):
 
 
 def _tracking_generate(calls):
-    def _gen(prompt, *, tabular_facts="", semantic_facts="", feedback=""):
+    def _gen(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
         calls.append(feedback)
         return {"status": "ok", "model": "lfm2.5-24b-a2b",
                 "text": "first attempt" if not feedback else "corrected attempt"}
@@ -99,7 +121,8 @@ def test_synthesized_path_calls_generator_with_merged_facts():
         "write a save email for 4471",
         table=TABLE,
         target="churned",
-        _lane_overrides={"route": _ok_route(0.99), "semantic": _ok_semantic, "tabular": _ok_tabular, "generate": _ok_generate},
+        _lane_overrides={"route": _ok_route(0.99), "semantic": _ok_semantic, "tabular": _ok_tabular,
+                         "generate": _ok_generate, "validate": _gate_pass},
     )
     assert r.path == "synthesized"
     assert r.generated["status"] == "ok"
@@ -153,7 +176,8 @@ def test_router_unavailable_fails_toward_synthesis():
 
     r = ask(
         "hello?",
-        _lane_overrides={"route": _err_route, "semantic": _ok_semantic, "generate": _echo_generate},
+        _lane_overrides={"route": _err_route, "semantic": _ok_semantic,
+                         "generate": _echo_generate, "validate": _gate_pass},
     )
     assert r.path == "synthesized"  # quality over cost when the router is down
     assert r.escalated
@@ -162,7 +186,8 @@ def test_router_unavailable_fails_toward_synthesis():
 def test_decompose_shape_recorded():
     r = ask(
         "compare churn across all segments and draft the board update",
-        _lane_overrides={"route": _ok_route(0.95, "decompose"), "semantic": _ok_semantic, "generate": _echo_generate},
+        _lane_overrides={"route": _ok_route(0.95, "decompose"), "semantic": _ok_semantic,
+                         "generate": _echo_generate, "validate": _gate_pass},
     )
     assert r.path == "decompose"
 
@@ -277,3 +302,142 @@ def test_escalate_lane_reports_missing_keys(monkeypatch):
     assert esc["status"] == "error"
     assert "TOKEN_PLAN_API_KEY" in esc["error"]
     assert "OLLAMA_API_KEY" in esc["error"]
+
+# ── web lane ──
+
+def test_web_lane_injected_when_router_fires():
+    captured: dict = {}
+    givens_seen: dict = {}
+
+    def _capture_generate(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
+        captured["web_facts"] = web_facts
+        return {"status": "ok", "model": "lfm2.5-24b-a2b",
+                "text": "The terrain API accepts a quantized-mesh source.", "usage": {"total_tokens": 10}}
+
+    def _capture_validate(state, *, givens=""):
+        givens_seen["givens"] = givens
+        return {"status": "ok", "passed": True, "outcome": "passed", "provider": "glide",
+                "answers_the_question": 0.91, "contradicts_facts": 0.04, "number_check": "ok"}
+
+    r = ask(
+        "What is the current MapLibre GL JS 3D terrain API?",
+        _lane_overrides={
+            "route": _ok_route(0.95, needs_live_facts=0.9),
+            "semantic": _ok_semantic,
+            "web": _ok_web,
+            "generate": _capture_generate,
+            "validate": _capture_validate,
+        },
+    )
+    assert r.web["status"] == "ok" and r.web["n_results"] == 1
+    assert "https://maplibre.org/docs" in captured["web_facts"], "the url reaches the S2 prompt"
+    assert "quantized-mesh" in captured["web_facts"], "the excerpt reaches the S2 prompt"
+    assert "https://maplibre.org/docs" in givens_seen["givens"], "the url rides in the validator givens"
+
+
+def test_web_lane_not_invoked_when_head_low():
+    calls: list[str] = []
+
+    def _tracking_web(prompt):
+        calls.append(prompt)
+        return _ok_web(prompt)
+
+    r = ask(
+        "what is the churn probability for 4471?",
+        _lane_overrides={
+            "route": _ok_route(0.02, "direct", needs_live_facts=0.02),
+            "semantic": _ok_semantic,
+            "web": _tracking_web,
+        },
+    )
+    assert calls == [], "web lane must not run when needs_live_facts is below the floor"
+    assert r.web == {}
+
+
+def test_web_lane_not_invoked_when_route_errors():
+    calls: list[str] = []
+
+    def _tracking_web(prompt):
+        calls.append(prompt)
+        return _ok_web(prompt)
+
+    def _err_route(prompt):
+        return {"status": "error", "error": "liquid provider unavailable"}
+
+    r = ask(
+        "What is the current MapLibre GL JS 3D terrain API?",
+        _lane_overrides={"route": _err_route, "semantic": _ok_semantic,
+                         "web": _tracking_web, "generate": _echo_generate, "validate": _gate_pass},
+    )
+    assert calls == [], "web lane must not run when the route errored"
+    assert r.route["status"] == "error"
+    assert r.web == {}
+
+
+def test_live_override_forces_and_suppresses():
+    calls: list[str] = []
+
+    def _tracking_web(prompt):
+        calls.append(prompt)
+        return _ok_web(prompt)
+
+    # live=True forces the lane on even with a low head
+    r = ask(
+        "what is the churn probability?",
+        live=True,
+        _lane_overrides={
+            "route": _ok_route(0.02, "direct", needs_live_facts=0.02),
+            "semantic": _ok_semantic, "web": _tracking_web,
+        },
+    )
+    assert len(calls) == 1, "live=True forces the web lane regardless of the head"
+    assert r.web["status"] == "ok"
+
+    # live=False suppresses it even with a high head
+    calls.clear()
+    r2 = ask(
+        "What is the current MapLibre GL JS 3D terrain API?",
+        live=False,
+        _lane_overrides={
+            "route": _ok_route(0.95, needs_live_facts=0.9),
+            "semantic": _ok_semantic, "web": _tracking_web,
+            "generate": _echo_generate, "validate": _gate_pass,
+        },
+    )
+    assert calls == [], "live=False suppresses the web lane regardless of the head"
+    assert r2.web == {}
+
+
+def test_number_check_allows_web_numbers():
+    from blend1.lanes import number_check
+
+    web_extract = "the terrain source accepts quantized-mesh tiles; the default is zoom 14"
+    ok = number_check("The terrain API defaults to zoom 14 for hillshade", web_extract)
+    assert ok["ok"], "a number present in the web extract must pass the check"
+    bad = number_check("The terrain API defaults to zoom 17 for hillshade", web_extract)
+    assert not bad["ok"] and "17" in bad["flagged"], "a number in no given is flagged"
+
+
+def test_web_lane_error_fails_open():
+    r = ask(
+        "What is the current MapLibre GL JS 3D terrain API?",
+        live=True,
+        _lane_overrides={
+            "route": _ok_route(0.95, needs_live_facts=0.9),
+            "semantic": _ok_semantic, "web": _err_web,
+            "generate": _echo_generate, "validate": _gate_pass,
+        },
+    )
+    assert r.web["status"] == "error"
+    assert "TINYFISH_API_KEY" in r.web["error"]
+    assert r.escalated, "a web-lane error escalates"
+    assert r.final_answer, "the ask still answers when the web lane fails open"
+
+
+def test_route_task_has_three_heads():
+    from blend1.lanes import _route_task
+
+    task = _route_task()
+    assert len(task.heads) == 3
+    assert "needs_live_facts" in task.head_ids()
+
