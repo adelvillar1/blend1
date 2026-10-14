@@ -2,7 +2,7 @@
 
 ```yaml
 ---
-status: draft
+status: completed
 created: 2026-10-14
 updated: 2026-10-14
 slug: blend1-project-corpora

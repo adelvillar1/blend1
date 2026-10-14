@@ -173,3 +173,45 @@ grounded by the web lane (pre-hoc substitution, $0) and the validation gate
 (post-hoc detection, ~$0.0005). Verify-mode would add sequential latency for
 ~zero marginal value. The web lane as shipped (supply facts for the ask,
 router-gated) stands; the verify extension is closed.
+
+---
+
+## Post-recap: per-project corpora + warmup freshness (2026-10-14, later session)
+
+Shipped the second approved plan of the day,
+`docs/plans/2026-10-14-blend1-project-corpora.md` (completed): per-project
+semantic corpora + docs-derived refresh + warmup freshness.
+
+| Hash | Message |
+|------|---------|
+| `ea786d1` | feat: per-project corpora — namespaced stores, docs-derived refresh with hash-checked staleness, search surfaces |
+| `4e11da2` | fix: review findings — typed CLI/service errors (no traceback), project path-escape rejected, symlink+explicit `CLAUDE.local.md` exclusion, root-repo resolution, 3 regression tests |
+
+**What was added** — `corpus.py`: `store_root`/`resolve_project` (param >
+`BLEND1_PROJECT` > cwd git-repo basename > legacy; call-time env), `refresh`
+(docs-derived: `docs/**/*.md` + root contract docs, `## `-section chunking,
+2,000-char cap, sha256 set-compare against the manifest — steady state is
+file reads, no embedding), `migrate_legacy`, `search`. `ask(project=…)`
+threads the resolved project to the semantic lane. CLI `--project`,
+`search`, `refresh`, `corpus migrate-legacy`; service `POST /v1/search`
+(400 on a bad project name, 503 on a down embedding server). The
+`session-warmup` skill gained a fail-soft corpus-freshness step (4b +
+checklist row). 43 offline tests (fake-sem1 with real store submodules).
+
+**Live-verified (parent-run)**: `seed --project alpha` → `vectors/alpha/`
+with the legacy root untouched; `refresh --project blend1` → 78 items from 9
+docs files, second run `"unchanged"`; `search "validation gate GLiDE"`
+→ top hit the validation-gate plan preamble (0.847); alpha/blend1 stores
+isolated; `/v1/search` → 22 ms; bad project → clean 400.
+
+**Review cycle**: spec-compliant, quality APPROVED with one important issue
+(CLI/service traceback on a down embedding server — would have broken the
+warmup step's fail-soft contract) plus hardenings, all fixed by the parent
+in `4e11da2`.
+
+**Open**: CLAUDE.md's code map is stale again (`cli.py — blend1
+ask|doctor|seed`, the `corpus.py` line) — approval-gated, proposed at
+close-out. The legacy store root also holds a stale pre-fix directory named
+after the full gguf model path (from the old slug bug, fixed 2026-10-13) —
+harmless (nothing reads it), left in place; removing it needs explicit
+approval.
