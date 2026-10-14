@@ -99,11 +99,21 @@ uv run blend1 doctor
 
 ## HTTP service
 
+The service runs as a LaunchAgent — `com.adelvillar1.blend1-service`, the
+same posture as sem1's llama-server: auto-loads at login, restarts on
+crash, logs to `~/.local/share/blend1/service.log`. So it is simply there
+for the routers' `composed` tier. By hand:
+
 ```bash
 cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420
 curl -X POST http://localhost:8420/v1/ask -H 'Content-Type: application/json' \
   -d '{"prompt":"write a save email for 4471","table":[…],"target":"churned"}'
 ```
+
+`BLEND1_BEARER_TOKEN` (optional; unset = localhost-open) resolves from
+blend1's own key chain (`~/.config/blend1/env`) through env.py — the same
+file that carries the lanes' keys. The routers that target the service
+carry the equal value in their runtime `.env`.
 
 ### The OpenAI-compatible face — `POST /v1/chat/completions`
 
