@@ -101,6 +101,40 @@ def _gate_error(state, *, givens=""):
     return {"status": "error", "error": "glide provider unavailable"}
 
 
+# ── sys1-score stubs ──
+
+def _score_correct(state):
+    return {"status": "ok", "provider": "liquid", "is_correct": 0.93,
+            "correctness": 5.0, "correct": True, "latency_ms": 180}
+
+
+def _score_wrong(state):
+    return {"status": "ok", "provider": "liquid", "is_correct": 0.21,
+            "correctness": 1.0, "correct": False, "latency_ms": 180}
+
+
+def _score_error(state):
+    return {"status": "error", "error": "liquid provider unavailable", "provider": "liquid"}
+
+
+# ── escalation-leg stubs ──
+
+def _ok_escalation(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
+    return {"status": "ok", "model": "big-model-70b", "text": "escalated answer",
+            "usage": {"total_tokens": 900}}
+
+
+def _skipped_escalation(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
+    return {"status": "skipped",
+            "reason": "escalation target is not configured: set BLEND1_ESCALATION_MODEL "
+                      "and BLEND1_ESCALATION_BASE ..."}
+
+
+def _err_escalation(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
+    return {"status": "error", "error": "escalation model HTTP 503: upstream unavailable",
+            "model": "big-model-70b"}
+
+
 def _tracking_generate(calls):
     def _gen(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
         calls.append(feedback)
@@ -122,7 +156,7 @@ def test_synthesized_path_calls_generator_with_merged_facts():
         table=TABLE,
         target="churned",
         _lane_overrides={"route": _ok_route(0.99), "semantic": _ok_semantic, "tabular": _ok_tabular,
-                         "generate": _ok_generate, "validate": _gate_pass},
+                         "generate": _ok_generate, "validate": _gate_pass, "score": _score_correct},
     )
     assert r.path == "synthesized"
     assert r.generated["status"] == "ok"
@@ -187,7 +221,8 @@ def test_decompose_shape_recorded():
     r = ask(
         "compare churn across all segments and draft the board update",
         _lane_overrides={"route": _ok_route(0.95, "decompose"), "semantic": _ok_semantic,
-                         "generate": _echo_generate, "validate": _gate_pass},
+                         "generate": _echo_generate, "validate": _gate_pass,
+                         "score": _score_correct},
     )
     assert r.path == "decompose"
 
@@ -210,13 +245,17 @@ def test_target_required_with_table():
 
 # ── validation gate ──
 
-BASE_OV = {"route": _ok_route(0.99), "semantic": _ok_semantic}
+# The tabular stub rides here so every synthesized ask that passes a table
+# stays offline — the orchestrator only submits the tabular lane when a
+# table is given, so table-less tests are unaffected.
+BASE_OV = {"route": _ok_route(0.99), "semantic": _ok_semantic, "tabular": _ok_tabular}
 
 
 def test_gate_pass_ships_without_retry():
     calls: list[str] = []
     r = ask("write a save email", _lane_overrides={
         **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_pass,
+        "score": _score_correct,
     })
     assert calls == [""], "a passing gate must not retry"
     assert r.validation["outcome"] == "passed"
@@ -228,6 +267,7 @@ def test_gate_fail_retries_once_with_feedback():
     calls: list[str] = []
     r = ask("write a save email", _lane_overrides={
         **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_fail,
+        "score": _score_correct, "escalation": _skipped_escalation,
     })
     assert len(calls) == 2, "exactly one retry"
     assert "drifted from the question" in calls[1], "the feedback names the failed head"
@@ -248,6 +288,7 @@ def test_gate_fail_retry_success_ships_corrected():
 
     r = ask("write a save email", _lane_overrides={
         **BASE_OV, "generate": _tracking_generate(calls), "validate": _validate,
+        "score": _score_correct,
     })
     assert r.final_answer == "corrected attempt"
     assert r.validation["retried"] is True
@@ -258,6 +299,7 @@ def test_inconclusive_ships_ungated_without_retry():
     calls: list[str] = []
     r = ask("write a save email", _lane_overrides={
         **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_inconclusive,
+        "score": _score_correct, "escalation": _skipped_escalation,
     })
     assert calls == [""], "an inconclusive gate must not retry"
     assert r.validation["outcome"] == "inconclusive"
@@ -269,6 +311,7 @@ def test_gate_down_ships_ungated():
     calls: list[str] = []
     r = ask("write a save email", _lane_overrides={
         **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_error,
+        "score": _score_correct,
     })
     assert calls == [""]
     assert r.validation["status"] == "error"
@@ -327,6 +370,7 @@ def test_web_lane_injected_when_router_fires():
             "web": _ok_web,
             "generate": _capture_generate,
             "validate": _capture_validate,
+            "score": _score_correct,
         },
     )
     assert r.web["status"] == "ok" and r.web["n_results"] == 1
@@ -402,6 +446,7 @@ def test_live_override_forces_and_suppresses():
             "route": _ok_route(0.95, needs_live_facts=0.9),
             "semantic": _ok_semantic, "web": _tracking_web,
             "generate": _echo_generate, "validate": _gate_pass,
+            "score": _score_correct,
         },
     )
     assert calls == [], "live=False suppresses the web lane regardless of the head"
@@ -426,6 +471,7 @@ def test_web_lane_error_fails_open():
             "route": _ok_route(0.95, needs_live_facts=0.9),
             "semantic": _ok_semantic, "web": _err_web,
             "generate": _echo_generate, "validate": _gate_pass,
+            "score": _score_correct,
         },
     )
     assert r.web["status"] == "error"
@@ -559,4 +605,445 @@ def test_web_lane_internals_with_fake_sdk(monkeypatch):
     monkeypatch.setitem(sys.modules, "tinyfish", None)
     rep = lanes.web_lane("anything")
     assert rep["status"] == "error" and "tinyfish extra" in rep["error"]
+
+
+# ── escalation leg: a larger configured model answers what the gate could
+#    not clear ──
+
+
+def test_escalation_fires_on_inconclusive_and_ships_flagged():
+    calls: list[str] = []
+    seen: dict = {}
+
+    def _esc(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
+        calls.append(feedback)
+        seen.update(tabular_facts=tabular_facts, semantic_facts=semantic_facts,
+                    web_facts=web_facts, feedback=feedback)
+        return _ok_escalation(prompt, tabular_facts=tabular_facts,
+                              semantic_facts=semantic_facts, web_facts=web_facts,
+                              feedback=feedback)
+
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate([]), "validate": _gate_inconclusive,
+        "score": _score_correct, "escalation": _esc,
+    })
+    # the escalated answer ships, flagged by the new key
+    assert r.escalated_answer is True
+    assert r.final_answer == "escalated answer"
+    assert r.escalation["status"] == "ok" and r.escalation["shipped"] is True
+    assert r.escalation["model"] == "big-model-70b"
+    # the gate's unresolved verdict still rides in the result
+    assert r.validation["outcome"] == "inconclusive" and r.validation["passed"] is None
+    assert r.escalated, "the caller must know the answer was never cleared"
+    # bounded: exactly one escalation attempt per ask
+    assert len(calls) == 1
+    # the same givens reach the larger model
+    assert "0.842" in seen["tabular_facts"], "the exact TabPFN number rides along"
+    assert "doc-1" in seen["semantic_facts"], "the semantic neighbors ride along"
+    assert "could not reach a confident verdict" in seen["feedback"]
+    assert "answers_the_question rated 0.63" in seen["feedback"]
+
+
+def test_escalation_fires_when_retry_fails():
+    calls: list[str] = []
+    seen: dict = {}
+
+    def _esc(prompt, *, tabular_facts="", semantic_facts="", web_facts="", feedback=""):
+        seen["feedback"] = feedback
+        return _ok_escalation(prompt, tabular_facts=tabular_facts,
+                              semantic_facts=semantic_facts, web_facts=web_facts,
+                              feedback=feedback)
+
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_fail,
+        "score": _score_correct, "escalation": _esc,
+    })
+    assert len(calls) == 2, "the gate's retry discipline is unchanged"
+    assert r.validation["retry_passed"] is False
+    assert r.escalated_answer is True
+    assert r.final_answer == "escalated answer"
+    assert "drifted from the question" in seen["feedback"], "the gate's verdict rides as feedback"
+
+
+def test_escalation_unconfigured_is_a_named_skip():
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate([]), "validate": _gate_inconclusive,
+        "score": _score_correct, "escalation": _skipped_escalation,
+    })
+    assert r.escalation["status"] == "skipped"
+    assert "BLEND1_ESCALATION_MODEL" in r.escalation["reason"]
+    assert r.escalated_answer is False
+    assert r.final_answer == "first attempt", "the original ships when the leg is unconfigured"
+
+
+def test_failed_escalation_ships_the_original_with_the_failure_named():
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate([]), "validate": _gate_inconclusive,
+        "score": _score_correct, "escalation": _err_escalation,
+    })
+    assert r.escalation["status"] == "error"
+    assert "503" in r.escalation["error"], "the failure is named"
+    assert r.escalated_answer is False
+    assert r.final_answer == "first attempt", "the gate never blocks"
+    assert r.escalated
+
+
+def test_escalation_does_not_fire_on_a_pass():
+    calls: list[int] = []
+
+    def _esc(*a, **kw):
+        calls.append(1)
+        return _ok_escalation(*a, **kw)
+
+    r = ask("write a save email", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate([]),
+        "validate": _gate_pass, "score": _score_correct, "escalation": _esc,
+    })
+    assert calls == [], "a cleared gate must not escalate"
+    assert r.escalated_answer is False
+    assert r.escalation == {}
+
+
+def test_direct_path_runs_neither_new_leg():
+    def _boom_score(state):
+        raise AssertionError("no sys1 score on the direct path")
+
+    def _boom_escalation(**kw):
+        raise AssertionError("no escalation on the direct path")
+
+    r = ask("what is the churn probability for 4471?", table=TABLE, target="churned",
+            _lane_overrides={"route": _ok_route(0.02, "direct"), "semantic": _ok_semantic,
+                             "tabular": _ok_tabular, "score": _boom_score,
+                             "escalation": _boom_escalation})
+    assert r.path == "direct"
+    assert r.score == {} and r.escalation == {}
+    assert r.escalated_answer is False
+
+
+def test_escalation_target_resolution(monkeypatch):
+    from blend1 import lanes
+
+    monkeypatch.delenv("BLEND1_ESCALATION_KEY_ENV", raising=False)
+    monkeypatch.setenv("BLEND1_ESCALATION_MODEL", "big-model-70b")
+    monkeypatch.setenv("BLEND1_ESCALATION_BASE", "https://esc.example/v1")
+    assert lanes._escalation_target() == {
+        "name": "big-model-70b", "base": "https://esc.example/v1",
+        "key_env": "BLEND1_ESCALATION_API_KEY",
+    }
+    monkeypatch.setenv("BLEND1_ESCALATION_KEY_ENV", "MY_ESC_KEY")
+    assert lanes._escalation_target()["key_env"] == "MY_ESC_KEY"
+    monkeypatch.delenv("BLEND1_ESCALATION_BASE")
+    assert lanes._escalation_target() is None, "a model alone does not arm the leg"
+
+
+def test_escalation_lane_unconfigured_names_the_env_vars(monkeypatch):
+    from blend1 import lanes
+
+    for var in ("BLEND1_ESCALATION_MODEL", "BLEND1_ESCALATION_BASE", "BLEND1_ESCALATION_KEY_ENV"):
+        monkeypatch.delenv(var, raising=False)
+    rep = lanes.escalation_lane("anything")
+    assert rep["status"] == "skipped"
+    assert "BLEND1_ESCALATION_MODEL" in rep["reason"]
+    assert "BLEND1_ESCALATION_BASE" in rep["reason"]
+
+
+def test_escalation_lane_missing_key_is_a_named_skip(monkeypatch):
+    from blend1 import lanes
+
+    monkeypatch.setenv("BLEND1_ESCALATION_MODEL", "big-model-70b")
+    monkeypatch.setenv("BLEND1_ESCALATION_BASE", "https://esc.example/v1")
+    monkeypatch.delenv("BLEND1_ESCALATION_API_KEY", raising=False)
+    rep = lanes.escalation_lane("anything")
+    assert rep["status"] == "skipped"
+    assert "BLEND1_ESCALATION_API_KEY" in rep["reason"]
+
+
+def _install_fake_escalation_transport(monkeypatch, payload):
+    """Point the shared OpenAI-compatible wire at a fake transport; return
+    the captured request view. Never the network."""
+    import json
+
+    from blend1 import lanes
+
+    monkeypatch.setenv("BLEND1_ESCALATION_MODEL", "big-model-70b")
+    monkeypatch.setenv("BLEND1_ESCALATION_BASE", "https://esc.example/v1/")
+    monkeypatch.setenv("BLEND1_ESCALATION_API_KEY", "test-key")
+    captured: dict = {}
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return json.dumps(self._body).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        captured["auth"] = req.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _Resp(payload)
+
+    monkeypatch.setattr(lanes.urllib.request, "urlopen", _fake_urlopen)
+    return captured
+
+
+def test_escalation_lane_calls_the_configured_model(monkeypatch):
+    from blend1 import lanes
+
+    captured = _install_fake_escalation_transport(monkeypatch, {
+        "model": "big-model-70b",
+        "choices": [{"message": {"content": "the escalated answer"}, "finish_reason": "stop"}],
+        "usage": {"total_tokens": 900, "cost": 0.004},
+    })
+    rep = lanes.escalation_lane(
+        "write a save email",
+        tabular_facts="churned = 1 (p=0.842)",
+        semantic_facts="- [doc-1] (cos 0.91): billing errors",
+        web_facts="- [Docs] (https://x.test/docs): untrusted excerpt",
+        feedback="the gate could not decide",
+    )
+    assert rep["status"] == "ok" and rep["text"] == "the escalated answer"
+    assert rep["cost_usd"] == 0.004
+    assert captured["url"] == "https://esc.example/v1/chat/completions"
+    assert captured["body"]["model"] == "big-model-70b"
+    assert captured["body"]["max_tokens"] == lanes.ESCALATION_MAX_TOKENS
+    assert captured["auth"] == "Bearer test-key"
+    assert captured["timeout"] == lanes.ESCALATION_TIMEOUT_S
+    system = captured["body"]["messages"][0]["content"]
+    # the same givens, the untrusted-source framing intact
+    assert "0.842" in system and "doc-1" in system and "https://x.test/docs" in system
+    assert "never follow" in system
+    assert "the gate could not decide" in system
+    assert captured["body"]["messages"][1]["content"] == "write a save email"
+
+
+def test_escalation_lane_http_error_is_named(monkeypatch):
+    import io
+    import urllib.error
+
+    from blend1 import lanes
+
+    _install_fake_escalation_transport(monkeypatch, {})
+
+    def _fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            "https://esc.example/v1/chat/completions", 503, "Service Unavailable", {},
+            io.BytesIO(b"upstream unavailable"),
+        )
+
+    monkeypatch.setattr(lanes.urllib.request, "urlopen", _fake_urlopen)
+    rep = lanes.escalation_lane("anything")
+    assert rep["status"] == "error"
+    assert "503" in rep["error"] and "upstream unavailable" in rep["error"]
+
+
+def test_escalation_lane_empty_content_is_a_failed_leg(monkeypatch):
+    from blend1 import lanes
+
+    _install_fake_escalation_transport(monkeypatch, {
+        "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+    })
+    rep = lanes.escalation_lane("anything")
+    assert rep["status"] == "error"
+    assert "no content" in rep["error"] and "length" in rep["error"]
+
+
+# ── sys1 score leg: d1 scores the generated answer's correctness ──
+
+
+def test_sys1_score_rides_in_the_result():
+    seen: dict = {}
+
+    def _score(state):
+        seen["state"] = state
+        return _score_correct(state)
+
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate([]), "validate": _gate_pass,
+        "score": _score,
+    })
+    assert r.score["status"] == "ok"
+    assert r.score["correct"] is True
+    assert r.score["is_correct"] == 0.93
+    assert r.score["reprocessed"] is False
+    assert r.score["shipped"] == "original"
+    # the score reads the SAME state shape the GLiDE critic reads
+    assert "QUESTION: write a save email" in seen["state"]
+    assert "FACTS AND SOURCES" in seen["state"]
+    assert "ANSWER: first attempt" in seen["state"]
+    assert "0.842" in seen["state"], "the computed facts are part of the evidence"
+
+
+def test_wrong_score_reprocesses_and_the_corrected_answer_ships():
+    calls: list[str] = []
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_pass,
+        "score": _score_wrong,
+    })
+    assert len(calls) == 2, "exactly one reprocess"
+    assert "correctness scorer" in calls[1], "the score's verdict rides back as feedback"
+    assert "0.21" in calls[1]
+    assert r.final_answer == "corrected attempt"
+    assert r.score["reprocessed"] is True
+    assert r.score["shipped"] == "reprocessed"
+    assert r.score["correct"] is False, "the verdict that fired the reprocess still rides"
+
+
+def test_right_score_does_not_reprocess():
+    calls: list[str] = []
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_pass,
+        "score": _score_correct,
+    })
+    assert len(calls) == 1, "a right score must not double-spend"
+    assert r.final_answer == "first attempt"
+    assert r.score["reprocessed"] is False
+
+
+def test_unavailable_sys1_names_the_absence():
+    def _err_route(prompt):
+        return {"status": "error", "error": "liquid provider unavailable"}
+
+    def _boom_score(state):
+        raise AssertionError("the score lane must not run when the route errored")
+
+    calls: list[str] = []
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        "route": _err_route, "semantic": _ok_semantic, "tabular": _ok_tabular,
+        "generate": _tracking_generate(calls), "validate": _gate_pass, "score": _boom_score,
+    })
+    assert r.score["status"] == "skipped"
+    assert "sys1 unavailable" in r.score["reason"]
+    assert len(calls) == 1, "no reprocess without a score"
+    assert r.final_answer == "first attempt", "the answer ships unscored, never blocked"
+
+
+def test_sys1_down_names_the_absence():
+    calls: list[str] = []
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate(calls), "validate": _gate_pass,
+        "score": _score_error,
+    })
+    assert r.score["status"] == "error"
+    assert "liquid provider unavailable" in r.score["error"]
+    assert len(calls) == 1, "no reprocess when the scorer could not answer"
+    assert r.final_answer == "first attempt"
+    assert r.escalated, "a leg that could not answer escalates"
+
+
+def test_failed_reprocess_ships_the_scored_answer_with_the_failure_named():
+    calls: list[str] = []
+
+    def _err_on_feedback_generate(prompt, *, tabular_facts="", semantic_facts="",
+                                  web_facts="", feedback=""):
+        calls.append(feedback)
+        if feedback:
+            return {"status": "error", "error": "Liquid API unreachable: connection reset",
+                    "model": "lfm2.5-24b-a2b"}
+        return {"status": "ok", "model": "lfm2.5-24b-a2b", "text": "first attempt",
+                "usage": {"total_tokens": 10}}
+
+    r = ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _err_on_feedback_generate, "validate": _gate_pass,
+        "score": _score_wrong,
+    })
+    assert len(calls) == 2
+    assert r.final_answer == "first attempt", "the scored answer ships when the reprocess fails"
+    assert r.score["reprocessed"] is True
+    assert r.score["shipped"] == "original"
+    assert "connection reset" in r.score["reprocess_error"]
+
+
+def test_score_task_shape():
+    from blend1.lanes import SCORE_FLOOR, _score_task
+
+    task = _score_task()
+    assert task.head_ids() == ["is_correct", "correctness"]
+    assert task.find("is_correct").floor == SCORE_FLOOR
+    assert task.find("correctness").score_max == 5
+
+
+# ── contract + telemetry ──
+
+
+def test_result_keys_grew_additively():
+    from blend1.types import RESULT_KEYS
+
+    for key in ("escalation", "score", "escalated_answer"):
+        assert key in RESULT_KEYS
+    r = ask("hello", _lane_overrides={"route": _ok_route(0.02, "direct"), "semantic": _ok_semantic})
+    assert set(r.as_dict()) == set(RESULT_KEYS)
+
+
+def test_telemetry_row_carries_the_new_keys_shapes(monkeypatch, tmp_path):
+    import json
+    import time
+
+    from blend1 import telemetry
+
+    monkeypatch.setattr(telemetry, "DEFAULT_ROOT", tmp_path)
+    ask("write a save email", table=TABLE, target="churned", _lane_overrides={
+        **BASE_OV, "generate": _tracking_generate([]), "validate": _gate_inconclusive,
+        "score": _score_wrong, "escalation": _ok_escalation,
+    })
+    day = time.strftime("%Y/%m/%d")
+    rows = [json.loads(line) for line in
+            (tmp_path / day / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+    assert len(rows) == 1
+    row = rows[0]
+    # the new keys' shapes ride in the row
+    assert row["escalated_answer"] is True
+    assert row["escalation"]["status"] == "ok"
+    assert row["escalation"]["model"] == "big-model-70b"
+    assert row["escalation"]["shipped"] is True
+    assert row["score"]["status"] == "ok"
+    assert row["score"]["reprocessed"] is True
+    assert row["score"]["shipped"] == "reprocessed"
+    # no prompt text, no answer text, no key material — anywhere in the row
+    blob = json.dumps(row)
+    assert "write a save email" not in blob
+    assert "first attempt" not in blob
+    assert "corrected attempt" not in blob
+    assert "escalated answer" not in blob
+    assert "test-key" not in blob and "Bearer" not in blob
+
+
+def test_telemetry_redacts_text_and_keys():
+    from blend1 import telemetry
+
+    red = telemetry._redact({
+        "text": "the answer", "api_key": "sk-live-xxx",
+        "authorization": "Bearer sk-live-xxx",
+        "nested": {"messages": [{"content": "secret"}], "keep": 1},
+    })
+    assert red["text"] == "<redacted>"
+    assert red["api_key"] == "<redacted>"
+    assert red["authorization"] == "<redacted>"
+    assert red["nested"]["messages"] == "<redacted>"
+    assert red["nested"]["keep"] == 1
+
+
+def test_doctor_reports_the_new_legs(monkeypatch):
+    import sys as sysmod
+
+    from blend1 import lanes
+
+    for var in ("BLEND1_ESCALATION_MODEL", "BLEND1_ESCALATION_BASE"):
+        monkeypatch.delenv(var, raising=False)
+    # keep the snapshot hermetic: no lane imports, no endpoint probes
+    monkeypatch.setitem(sysmod.modules, "sem1", None)
+    monkeypatch.setitem(sysmod.modules, "sdm1", None)
+    report = lanes.lane_report()
+    assert report["escalation"]["available"] is False
+    assert "BLEND1_ESCALATION_MODEL" in report["escalation"]["reason"]
+    assert report["score"]["provider"] == "liquid (d1) via sys1"
+    assert report["score"]["reason"]
 

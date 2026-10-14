@@ -46,10 +46,10 @@ paste key values into commits, docs, or chat.
 - Functional contract → `FUNCTIONAL-SPECIFICATIONS.md`
 
 **Code map** (all under `src/blend1/`)
-- `orchestrator.py` — `ask()`: parallel lanes, merge, route, telemetry
-- `lanes.py` — the six lane callables + `lane_report()` (doctor)
+- `orchestrator.py` — `ask()`: parallel lanes, merge, route, validation gate (GLiDE + one bounded retry), sys1 correctness score (one bounded reprocess), escalation leg (a larger configured model when the gate could not clear), telemetry
+- `lanes.py` — the lane callables (`route`, `semantic`, `tabular`, `generate`, `validate`, `score`, `escalation`, `voice`, `web`) + `escalate_lane()` (the critic chain) + `lane_report()` (doctor)
 - `corpus.py` — semantic memory: per-project stores (`vectors/<project>/`, legacy root aliased), docs-derived `refresh` (hash-checked staleness), `search`
-- `types.py` — `BlendResult` wire contract
+- `types.py` — `BlendResult` wire contract (keys additive-only; `escalated` = a lane failed open, `escalated_answer` = the escalation leg's answer shipped)
 - `env.py` — key-file loading (`~/.config/blend1/env` → `sdm1/env` → `dev-decisions/env` → `gen1/env`)
 - `telemetry.py` — redacted JSONL log
 - `cli.py` — `blend1 ask|doctor|seed|search|refresh|corpus`
@@ -76,6 +76,22 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
 
 ## Today's state (2026-10-14)
 
+- **Escalation leg + sys1-scored reprocess shipped 2026-10-14** (plan
+  `2026-10-14-blend1-escalation-and-score`, completed; feature branch
+  `feature/escalation-and-sys1-score`, not merged): when the GLiDE gate
+  cannot clear an answer (inconclusive — no critic answered — or the bounded
+  retry uncleared) the ask escalates to a LARGER configured model
+  (`BLEND1_ESCALATION_MODEL` + `_BASE` + `_KEY_ENV`) with the same givens,
+  untrusted-source framing intact; the escalated answer ships flagged by the
+  new `escalated_answer` key (unconfigured → named skip, failed → original
+  ships with the failure named — the gate never blocks). Separately, sys1
+  (d1) SCORES every generated answer's correctness on the same state shape
+  the critic reads; a wrong score reprocesses once with the score's
+  feedback; an unavailable sys1 names the absence, never a fabricated
+  score. New result keys (additive): `escalation`, `score`,
+  `escalated_answer`. Worst case ≈ 4x generate cost (initial + gate retry +
+  score reprocess + escalation), failure paths only. Offline suite 66/66,
+  ruff clean.
 - **v0.3 web lane shipped 2026-10-14** (plan `2026-10-14-blend1-web-lane`, completed): a sixth lane — tinyfish search+fetch (free; `blend1[web]` extra, `TINYFISH_API_KEY` in `~/.config/blend1/env`) — injects live sources as givens with url provenance. Lane selection is the router's: d1's `blend_route` gained a `needs_live_facts` noul head (floor 0.70 UNFITTED, logged per ask); `ask(live=True/False)` force/suppresses. Live-verified: docs ask auto-fired web (0.881, direct path, 3 sources, $0 generate spend), churn ask suppressed (0.321); 23/23 offline tests, ruff clean. Orchestrator is now route-first; web facts join the number-check givens and the S2 prompt as untrusted reference data.
 - v0.1.0 committed (`34b4126` + `.gitignore`). Offline suite green (15/15 at v0.1.0; 23/23 at v0.3), ruff clean.
 - **All four model lanes live-verified end-to-end**: d1 routes (0.002 direct / 0.978

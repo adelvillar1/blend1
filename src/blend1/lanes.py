@@ -11,6 +11,10 @@ Lanes:
     tabular   — sdm1 + Prior Labs TabPFN (hosted): exact predictions
     generate  — Liquid lfm2.5-24b-a2b via Liquid's own API: the only paid text leg
     validate  — GLiDE rates the 24B's answer; inconclusive escalates to critics
+    score     — sys1 (d1) scores the generated answer's correctness; a wrong
+                score reprocesses once
+    escalation — a LARGER configured model answers what the gate could not
+                clear; the escalated answer ships flagged
     voice     — gen1 speak (optional; the media render of the final answer)
     web       — tinyfish search + fetch (optional; live sources as givens)
 """
@@ -195,14 +199,21 @@ S2_SYSTEM_TEMPLATE = (
 )
 
 
-def _liquid_chat(messages: list[dict], model: str, api_key: str, timeout: float) -> dict:
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "max_tokens": GENERATE_MAX_TOKENS,
-    }).encode("utf-8")
+def _openai_chat(
+    base: str, messages: list[dict], model: str, api_key: str, timeout: float, max_tokens: int
+) -> dict:
+    """One OpenAI-compatible chat-completions POST. Shared by the generate
+    lane (Liquid's own API) and the escalation leg (any configured
+    OpenAI-compatible endpoint) — one wire shape, one error surface."""
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
-        f"{GENERATE_BASE}/chat/completions",
+        base.rstrip("/") + "/chat/completions",
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -212,6 +223,12 @@ def _liquid_chat(messages: list[dict], model: str, api_key: str, timeout: float)
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+def _liquid_chat(messages: list[dict], model: str, api_key: str, timeout: float) -> dict:
+    return _openai_chat(
+        GENERATE_BASE, messages, model, api_key, timeout, GENERATE_MAX_TOKENS
+    )
 
 
 def generate_lane(
@@ -684,6 +701,202 @@ def escalate_lane(state: str) -> dict:
     }
 
 
+# ── escalation leg: a larger configured model answers what the gate could
+#    not clear ───────────────────────────────────────────────────────────────
+
+# When the validation gate cannot clear an answer — an inconclusive verdict
+# (no critic answered) or a bounded retry that did not clear the gate — the
+# ask escalates to a LARGER configured model with the same givens (the S2
+# prompt with the exact tabular facts, the semantic neighbors, and the web
+# excerpts, the untrusted-source framing intact). The target is CONFIGURED,
+# never hardcoded:
+#   BLEND1_ESCALATION_MODEL    — the larger model id (required to arm the leg)
+#   BLEND1_ESCALATION_BASE     — its OpenAI-compatible base URL (required)
+#   BLEND1_ESCALATION_KEY_ENV  — names the env var holding the key
+#                                (default BLEND1_ESCALATION_API_KEY)
+# Unconfigured → a NAMED SKIP (never a crash, never a silent spend). A
+# transport or parse failure → a named error and the ORIGINAL answer ships:
+# the gate never blocks.
+ESCALATION_TIMEOUT_S = 300
+# The escalation model is larger and may reason longer; the same 16K budget
+# the generate lane uses bounds a runaway escalation's cost.
+ESCALATION_MAX_TOKENS = 16384
+
+
+def _escalation_target() -> dict | None:
+    """The configured escalation target, or None when the leg is unconfigured
+    (model and base are both required to arm it)."""
+    model = os.environ.get("BLEND1_ESCALATION_MODEL")
+    base = os.environ.get("BLEND1_ESCALATION_BASE")
+    if not model or not base:
+        return None
+    key_env = os.environ.get("BLEND1_ESCALATION_KEY_ENV") or "BLEND1_ESCALATION_API_KEY"
+    return {"name": model, "base": base, "key_env": key_env}
+
+
+def escalation_lane(
+    prompt: str,
+    *,
+    tabular_facts: str = "(none)",
+    semantic_facts: str = "(none)",
+    web_facts: str = "(none)",
+    feedback: str = "",
+) -> dict:
+    """Escalate the ask to a LARGER configured model with the same givens.
+
+    Fires only when the validation gate could not clear the answer (an
+    inconclusive verdict, or the bounded retry not clearing the gate) — the
+    orchestrator owns that decision; this lane never spends on its own.
+
+    BOUNDED: one attempt per ask (the retry's discipline). Worst-case cost
+    is the initial generate + the gate's one retry + this one escalation
+    ≈ 3x the generate cost, on failure paths only (the sys1 reprocess can
+    add one more generate call, ≈ 4x, also failures only).
+
+    Never raises. Unconfigured target (or missing key) → {"status":
+    "skipped"} naming the env vars; a failed call → {"status": "error"}
+    naming the failure — the original answer ships either way (the gate
+    never blocks).
+    """
+    target = _escalation_target()
+    if target is None:
+        return {
+            "status": "skipped",
+            "reason": "escalation target is not configured: set BLEND1_ESCALATION_MODEL "
+            "and BLEND1_ESCALATION_BASE (optionally BLEND1_ESCALATION_KEY_ENV naming the "
+            "key variable, default BLEND1_ESCALATION_API_KEY) in ~/.config/blend1/env",
+        }
+    api_key = os.environ.get(target["key_env"])
+    if not api_key:
+        return {
+            "status": "skipped",
+            "reason": f"escalation target is configured but its key is missing: "
+            f"set {target['key_env']} in ~/.config/blend1/env",
+        }
+    system = S2_SYSTEM_TEMPLATE.format(
+        tabular_facts=tabular_facts, semantic_facts=semantic_facts, web_facts=web_facts
+    )
+    if feedback:
+        system += f"\n\nCORRECTION FROM THE VALIDATION GATE: {feedback}"
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+    t0 = time.monotonic()
+    try:
+        data = _openai_chat(
+            target["base"], messages, target["name"], api_key,
+            ESCALATION_TIMEOUT_S, ESCALATION_MAX_TOKENS,
+        )
+    except urllib.error.HTTPError as e:
+        body = ""
+        with contextlib.suppress(Exception):
+            body = e.read().decode("utf-8", "replace")[:200]
+        return {
+            "status": "error",
+            "error": f"escalation model HTTP {e.code}: {body}",
+            "model": target["name"],
+        }
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return {
+            "status": "error",
+            "error": f"escalation model unreachable: {e}",
+            "model": target["name"],
+        }
+    choice = (data.get("choices") or [{}])[0]
+    text = (choice.get("message") or {}).get("content") or ""
+    usage = data.get("usage") or {}
+    if not text:
+        # Same discipline as the generate lane: empty content is a failed
+        # leg, not an answer (a reasoning model can spend the whole budget).
+        return {
+            "status": "error",
+            "error": f"escalation model returned no content (finish_reason="
+            f"{choice.get('finish_reason')})",
+            "model": target["name"],
+        }
+    return {
+        "status": "ok",
+        "model": data.get("model") or target["name"],
+        "text": text,
+        "usage": usage,
+        "cost_usd": usage.get("cost"),
+        "latency_ms": int((time.monotonic() - t0) * 1000),
+    }
+
+
+# ── score lane: sys1 (d1) scores the generated answer's correctness ─────────
+
+SCORE_TASK_ID = "blend_score"
+# The noul value IS P(correct) (Jev-family semantics, the same reading as
+# ROUTE_FLOOR). UNFITTED until feedback rows exist — the repo's gate-floor
+# convention; the value rides in the result either way.
+SCORE_FLOOR = 0.70
+
+
+def _score_task():
+    from sys1.types import Task, make_noul, make_score
+
+    return Task(
+        id=SCORE_TASK_ID,
+        description="Score a generated answer's correctness against its givens.",
+        heads=[
+            make_noul(
+                "Is the answer correct, given the question and the facts and sources?",
+                id="is_correct",
+                floor=SCORE_FLOOR,
+            ),
+            make_score(
+                "How correct is this answer?",
+                id="correctness",
+                score_min=1,
+                score_max=5,
+                legend=["wrong", "mostly wrong", "partial", "mostly right", "correct"],
+                # The score rides in the result as the recorded judgment;
+                # the is_correct noul is the gate.
+            ),
+        ],
+    )
+
+
+def score_lane(state: str) -> dict:
+    """sys1 (d1) scores the generated answer's correctness against the
+    givens. `state` is the SAME shape the GLiDE critic reads (question +
+    facts and sources + answer), so the score is a correctness judgment on
+    the same evidence — it sits beside the gate, it does not replace it.
+
+    Never raises; never blocks — an unavailable sys1 names the absence and
+    the answer ships unscored, never with a fabricated score.
+    """
+    try:
+        import sys1
+    except Exception as e:  # pragma: no cover - sys1 is a hard dep
+        return {"status": "error", "error": f"sys1 import failed: {e}"}
+    try:
+        r = sys1.classify("liquid", _score_task(), state)
+        if not r.providers_used:
+            return {
+                "status": "error",
+                "error": r.reason or "liquid provider unavailable",
+                "provider": "liquid",
+            }
+        correct_head = r.head("is_correct", "liquid") or {}
+        quality = r.head("correctness", "liquid") or {}
+        noul = correct_head.get("noul")
+        return {
+            "status": "ok",
+            "provider": "liquid",
+            "is_correct": noul,
+            "correctness": quality.get("score"),
+            "correctness_expected": quality.get("expected_level"),
+            "correct": None if noul is None else noul >= SCORE_FLOOR,
+            "latency_ms": r.latency_ms,
+            "telemetry": r.telemetry.get("liquid", {}),
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {e}", "provider": "liquid"}
+
+
 # ── doctor ───────────────────────────────────────────────────────────────────
 
 
@@ -751,6 +964,32 @@ def lane_report() -> dict:
             "key_env": c["key_env"],
         })
     report["critics"] = critics
+
+    target = _escalation_target()
+    if target is None:
+        report["escalation"] = {
+            "available": False,
+            "reason": "escalation target not configured — set BLEND1_ESCALATION_MODEL + "
+            "BLEND1_ESCALATION_BASE (the leg is a named skip until then)",
+            "provider": "configured larger model (OpenAI-compatible chat)",
+        }
+    else:
+        key_ok = bool(os.environ.get(target["key_env"]))
+        report["escalation"] = {
+            "available": key_ok,
+            "reason": f"{target['name']} configured; {target['key_env']} "
+            + ("set" if key_ok else "missing"),
+            "provider": "configured larger model (OpenAI-compatible chat)",
+        }
+
+    report["score"] = {
+        "available": bool(os.environ.get("LIQUID_API_KEY")),
+        "reason": "d1 (liquid) via sys1 scores every synthesized answer; a wrong score "
+        "reprocesses once"
+        if os.environ.get("LIQUID_API_KEY")
+        else "missing LIQUID_API_KEY — no correctness score (the absence is named)",
+        "provider": "liquid (d1) via sys1",
+    }
 
     has_voice_keys = bool(os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("STEPFUN_API_KEY"))
     report["voice"] = {
