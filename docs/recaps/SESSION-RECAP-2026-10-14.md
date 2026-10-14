@@ -158,3 +158,18 @@ fixed by the parent before live verification:
 - The user's mid-session correction pattern (pasted SDK snippet truncated
   twice by the TUI) was resolved by pulling the official SDK from PyPI and
   reading its source — the canonical wire, no guessing.
+
+---
+
+## Post-recap: verify-mode rejected (2026-10-14, same session)
+
+Explored and **rejected** routing other lanes' outputs through the web lane
+as a per-ask fact-checker (the "pre fact-checker" extension). Ruling (user):
+the lanes' outputs aren't recall-based — TabPFN computes exact predictions
+from the user's own table, sem1 retrieves the user's own corpus (authoritative
+by definition; freshness is a re-seeding problem), sys1 emits decisions, not
+facts. The only recall-based fact source is the 24B synthesizer, already
+grounded by the web lane (pre-hoc substitution, $0) and the validation gate
+(post-hoc detection, ~$0.0005). Verify-mode would add sequential latency for
+~zero marginal value. The web lane as shipped (supply facts for the ask,
+router-gated) stands; the verify extension is closed.
