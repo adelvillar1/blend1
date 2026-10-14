@@ -18,29 +18,39 @@ prompt ──┬── route lane    (sys1 → Liquid d1: needs_generation noul 
                               ▼
                     generate lane (Liquid /openai/v1/chat/completions, lfm2.5-24b-a2b)
                               │
-                              ▼
-                    validate lane (GLiDE rates the answer; d1 on oversized states)
-                         │           │
-                    passed/       inconclusive ──► escalation tier (qwen3.8-flash → glm-5.3-flash)
-                    failed             │                  │
-                         │        no critic ──────────────┼──► ship ungated, escalated
-                         ▼                                ▼
-              failed ──► ONE retry (verdict injected as feedback) ──► re-gate
-                         │
-                         ▼
-                 final answer (+ optional gen1 voice render)
+              ┌───────────────┼────────────────────────────┐
+              ▼               ▼                            ▼
+       validate lane    score lane (sys1 d1:          (gate passed → ship)
+       (GLiDE rates;     is the answer correct?
+        d1 on oversized  wrong ──► ONE reprocess
+        states;          (the score's feedback)
+        inconclusive → critic tier: qwen3.8-flash → glm-5.3-flash;
+        no critic → passed None)
+              │               │                            │
+       passed/       failed ──► ONE retry (verdict injected as feedback) ──► re-gate
+              │               │
+              │          inconclusive, or the retry did not clear the gate
+              │               │
+              │               ▼
+              │          escalation leg (a LARGER configured model answers with
+              │          the same givens; the answer ships FLAGGED —
+              │          escalated_answer. Unconfigured → named skip; failed →
+              │          the original ships, failure named)
+              └───────────────┴──────────────► final answer (+ optional gen1 voice render)
 ```
 
 Every lane is one function returning a lane report; none raises. The orchestrator
 (`orchestrator.ask`) owns threading, the route gate, the merge, the validation
-gate + retry cycle, and the log row.
+gate + retry cycle, the sys1 score + reprocess, the escalation leg, and the
+log row. Nothing blocks: the gate, the score, and the escalation each ship
+the best available answer with their unresolved outcome named in the result.
 
 ## Module map
 
 | Module | Role |
 |---|---|
-| `orchestrator.py` | `ask()` — parallel lanes, route gate, merge, telemetry row |
-| `lanes.py` | `route_lane`, `semantic_lane`, `tabular_lane`, `generate_lane`, `validate_lane`, `escalate_lane`, `voice_lane`, `web_lane`, `lane_report()` |
+| `orchestrator.py` | `ask()` — parallel lanes, route gate, merge, validation gate + retry, sys1 score + reprocess, escalation leg, telemetry row |
+| `lanes.py` | `route_lane`, `semantic_lane`, `tabular_lane`, `generate_lane`, `validate_lane`, `score_lane`, `escalation_lane`, `escalate_lane`, `voice_lane`, `web_lane`, `lane_report()` |
 | `corpus.py` | `seed()` / `retrieve()` / `search()` / `refresh()` / `derive_items()` — per-project sem1 VectorStore under `~/.local/share/blend1/vectors/` |
 | `types.py` | `BlendResult` + `RESULT_KEYS` (additive contract) |
 | `env.py` | key-file loading, setdefault across four files |
@@ -177,6 +187,81 @@ Chain (both wired from the Hermes agent config, both verified live):
   blocks (fail-open).
 - Per-critic env overrides: `BLEND1_CRITIC_<N>_BASE` / `_MODEL` / `_KEY_ENV`.
 
+### escalation — the larger-model leg (2026-10-14)
+
+When the validation gate cannot clear an answer, the ask escalates to a
+LARGER configured model instead of shipping an unverified one. Two triggers,
+exactly:
+
+1. **Inconclusive** — `validation.status == "ok"` and `passed is None`
+   (the critic chain could not break the tie).
+2. **The bounded retry did not clear the gate** — `retry_passed is False`.
+
+A down critic (`status == "error"`) is NOT a trigger — that path already
+ships ungated, unchanged.
+
+- Wire: plain OpenAI-compatible chat (`POST {base}/chat/completions`,
+  `temperature` default, `max_tokens: 16384`, timeout 300s) through the
+  shared `_openai_chat` helper — the same wire shape the generate lane uses.
+- The escalation target is **CONFIGURED, never hardcoded**:
+  `BLEND1_ESCALATION_MODEL` + `BLEND1_ESCALATION_BASE` arm the leg (both
+  required); `BLEND1_ESCALATION_KEY_ENV` names the env variable holding the
+  key (default `BLEND1_ESCALATION_API_KEY`).
+- The larger model sees the **same givens** as the 24B: the S2 system prompt
+  with the exact TabPFN facts, the semantic neighbors, and the web excerpts
+  — the untrusted-source framing intact — plus the gate's unresolved verdict
+  rendered as feedback (the retry's discipline: `_escalation_feedback`).
+- **Bounded: one attempt per ask.** Worst-case cost is the initial generate
+  + the gate's one retry + this one escalation ≈ 3x the generate cost
+  (the sys1 reprocess can add one more generate call, ≈ 4x), failure paths
+  only. Named in `lanes.escalation_lane`'s docstring.
+- The escalated answer ships **FLAGGED** — result key `escalated_answer`
+  (True only when the escalation leg's answer is the final one). `escalated`
+  keeps its exact meaning ("a lane failed open"); the gate's unresolved
+  verdict rides in `validation` beside it.
+- Unconfigured target (or missing key) → `{"status": "skipped"}` naming the
+  env vars — never a crash, never a silent spend. A transport/parse failure
+  → `{"status": "error"}` naming the failure and the ORIGINAL answer ships:
+  the gate never blocks.
+
+### score — the sys1 correctness score (2026-10-14)
+
+sys1 (d1, the same Liquid provider the router uses) SCORES the generated
+answer's correctness against the givens — a correctness judgment BESIDE the
+GLiDE gate, not a replacement.
+
+- Wire: `sys1.classify("liquid", _score_task(), state)` — the same wire the
+  route lane uses. The state is the SAME shape the GLiDE critic reads
+  (`orchestrator._validate_state`: question + facts and sources + answer),
+  so the score judges the same evidence.
+- Task `blend_score` heads:
+  - `is_correct` (noul, floor `SCORE_FLOOR = 0.70`, UNFITTED until feedback
+    rows exist) — **gates**. The noul value IS P(correct); at/above the floor
+    the answer is correct, below it is wrong.
+  - `correctness` (score 1–5) — recorded in the result as the judgment's
+    value; the noul is the gate.
+- **A wrong score reprocesses**: one bounded re-synthesis with the score's
+  verdict injected as feedback (`_score_feedback`, the retry's discipline).
+  The corrected answer ships when the lane answers; a failed reprocess
+  ships the scored answer with the failure named. One attempt, ≈ 2x generate
+  cost on this leg, failures only. The reprocessed answer is not re-gated —
+  the gate's verdict on the original stands and rides in `validation`.
+- Runs on the generated answer after the gate resolves (on the retry's
+  answer when the retry cleared the gate), before the escalation leg — so a
+  bigger model, when the gate could not clear, sees the best-informed
+  answer and all feedback.
+- **An unavailable sys1 names the absence.** The route lane is the sys1 front
+  door: when it errored, the orchestrator does not call the score lane at
+  all — the result carries `{"status": "skipped", "reason": "sys1
+  unavailable — the route lane errored; no correctness score"}` and no
+  reprocess fires. A score lane that itself fails open (no provider) rides
+  `{"status": "error", …}`. Never a fabricated score. On the direct path (or
+  a failed generative lane) there is no generated answer to score and the
+  key rides `{}`.
+- The outcome rides in the result: `score.correct` (bool | None),
+  `score.is_correct` (the noul), `score.correctness` (the 1–5 value),
+  `score.reprocessed` (bool), `score.shipped` ("original" | "reprocessed").
+
 ## Semantic corpus — per-project stores
 
 Layout under the store root (`BLEND1_VECTORS_DIR`, default
@@ -271,8 +356,31 @@ script self-seeds, so nothing depends on it.
   },
   "voice":    {"status", "provider", "duration_seconds", …},
   "web":      {"status", "provider", "results": [{"url","title","text"}], "n_results", "latency_ms", …},
+  "escalation": {
+    "status": "ok" | "error" | "skipped",   // skipped = target unconfigured (reason names the env vars)
+    "model": "…",                            // the configured larger model
+    "text": "…",                             // the escalated answer (rides in the object, never in the log)
+    "usage": {…}, "cost_usd": 0.004, "latency_ms": 900,
+    "shipped": true,                         // present and true only when this answer is the final one
+    "reason": "…",                           // the skip reason (skipped)
+    "error": "…"                             // the failure (error)
+  },
+  "score": {
+    "status": "ok" | "error" | "skipped",    // skipped = sys1 unavailable (route errored)
+    "provider": "liquid",                    // d1 via sys1
+    "is_correct": 0.93,                      // the gating noul (P(correct))
+    "correctness": 5.0,                      // the recorded 1–5 score
+    "correct": true,                         // is_correct ≥ SCORE_FLOOR
+    "reprocessed": false,                    // did a reprocess fire
+    "shipped": "original" | "reprocessed",   // which generative answer the score left in place
+    "reason": "…",                           // the absence reason (skipped)
+    "error": "…",                            // the failure (error)
+    "reprocess_error": "…",                  // present when a reprocess failed
+    "latency_ms": 180
+  },
   "final_answer": "…",
-  "total_latency_ms": 0
+  "total_latency_ms": 0,
+  "escalated_answer": false                  // the escalation leg's answer shipped (the flag beside `escalated`)
 }
 ```
 
@@ -282,8 +390,10 @@ Keys are additive-only — see `types.RESULT_KEYS`.
 ## Telemetry
 
 One JSONL row per `ask()` at `~/.local/share/blend1/logs/YYYY/MM/DD/events.jsonl`:
-lane telemetry, route decision, latencies, cost, `answer_sha256` + counts. Never
-prompt text, answer text, or key values — `telemetry.REDACT_KEYS` strips them even
+lane telemetry, route decision, latencies, cost, `answer_sha256` + counts. The
+escalation and score reports ride in the row too (their `text` stripped before
+the writer, and `REDACT_KEYS` strips it again as a backstop). Never prompt
+text, answer text, or key values — `telemetry.REDACT_KEYS` strips them even
 if a lane leaks them.
 
 ## Configuration
@@ -296,6 +406,9 @@ if a lane leaks them.
 | `TOKEN_PLAN_API_KEY` | escalation critic #1 (qwen3.8-flash) | — |
 | `OLLAMA_API_KEY` | escalation critic #2 (glm-5.3-flash) | — |
 | `BLEND1_CRITIC_<N>_BASE/_MODEL/_KEY_ENV` | per-critic chain overrides | built-in chain |
+| `BLEND1_ESCALATION_MODEL` | escalation leg — the larger model id | unset (leg is a named skip) |
+| `BLEND1_ESCALATION_BASE` | escalation leg — OpenAI-compatible base URL | unset (leg is a named skip) |
+| `BLEND1_ESCALATION_KEY_ENV` | escalation leg — names the env var holding the key | `BLEND1_ESCALATION_API_KEY` |
 | `DASHSCOPE_API_KEY` / `STEPFUN_API_KEY` | voice (via gen1) | — |
 | `TINYFISH_API_KEY` | web (search + fetch) | — |
 | `BLEND1_LOG_DIR` | telemetry | `~/.local/share/blend1/logs` |
@@ -309,10 +422,13 @@ which key lives where.
 
 ## Testing
 
-- `uv run --extra dev pytest` — 40 offline tests: stub lanes (routing merge,
+- `uv run --extra dev pytest` — 66 offline tests: stub lanes (routing merge,
   direct-path skip, fail-open composition, router-down bias toward
-  synthesis) plus the corpus suite (project resolution order, store
-  isolation, docs-derived refresh staleness, legacy migration, search) run
-  against a deterministic fake embedder with real VectorStores in tmp dirs.
+  synthesis, the validation gate + retry, the sys1 score + reprocess, the
+  escalation leg + its mocked transport, contract/telemetry shapes) plus the
+  corpus suite (project resolution order, store isolation, docs-derived
+  refresh staleness, legacy migration, search) run against a deterministic
+  fake embedder with real VectorStores in tmp dirs. Every network lane is
+  stubbed per test — the suite makes no live calls.
 - `uv run python scripts/smoke_live.py` — live: doctor + corpus seed + three asks
   (direct, synthesized, tabular). Every lane that can answer, answers for real.

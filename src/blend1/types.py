@@ -4,8 +4,8 @@ Contract rule (house pattern): result keys are only ever ADDED. Renaming or
 removing a key below is a breaking change and needs a plan.
 
 Every lane reports itself: `route`, `semantic`, `tabular`, `generated`,
-`validation`, `voice`, `web` each carry their own telemetry and their own
-error. A lane that
+`validation`, `voice`, `web`, `escalation`, `score` each carry their own
+telemetry and their own error. A lane that
 could not answer never breaks the blend — it fails open with its reason
 recorded, and the orchestrator composes the best answer from the lanes that
 did answer (mirroring sys1/sdm1 fail-open).
@@ -28,8 +28,11 @@ RESULT_KEYS = (
     "validation",
     "voice",
     "web",
+    "escalation",
+    "score",
     "final_answer",
     "total_latency_ms",
+    "escalated_answer",
 )
 
 
@@ -49,8 +52,11 @@ class BlendResult:
     validation: dict = field(default_factory=dict)
     voice: dict = field(default_factory=dict)
     web: dict = field(default_factory=dict)
+    escalation: dict = field(default_factory=dict)
+    score: dict = field(default_factory=dict)
     final_answer: str = ""
     total_latency_ms: int = 0
+    escalated_answer: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -64,8 +70,11 @@ class BlendResult:
             "validation": dict(self.validation),
             "voice": dict(self.voice),
             "web": dict(self.web),
+            "escalation": dict(self.escalation),
+            "score": dict(self.score),
             "final_answer": self.final_answer,
             "total_latency_ms": self.total_latency_ms,
+            "escalated_answer": self.escalated_answer,
         }
 
     @property
@@ -73,11 +82,16 @@ class BlendResult:
         """True when any lane failed open — the caller should know the answer
         rests on fewer lanes than requested. A validation gate that FAILED
         the answer (even after retry) also escalates: the answer ships, but
-        the caller deserves to know it was rated unsatisfactory."""
+        the caller deserves to know it was rated unsatisfactory.
+
+        Note the meaning is exactly "a lane failed open": the escalation leg's
+        SHIPPED answer is flagged by the separate `escalated_answer` key (the
+        leg succeeding is not a lane failure)."""
         lanes_errored = any(
             lane.get("status") == "error"
             for lane in (self.route, self.semantic, self.tabular, self.generated,
-                         self.validation, self.voice, self.web)
+                         self.validation, self.voice, self.web, self.escalation,
+                         self.score)
             if lane
         )
         gate_failed = bool(

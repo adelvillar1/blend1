@@ -32,6 +32,8 @@ dependencies = [
 dev = [
     "pytest>=7",
     "ruff>=0.6",
+    # the service's own framework, so the HTTP surface is covered offline
+    "fastapi>=0.110",
 ]
 # The voice output lane shells into gen1 (dashscope/stepfun transports).
 voice = [
@@ -79,4 +81,7 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# the service package lives at the repo root (uvicorn service.main:app), not
+# under src/ — put the root on sys.path so tests/test_service.py can import it
+pythonpath = ["."]
 addopts = "-q"

@@ -1,4 +1,4 @@
-"""The orchestrator: one ask(), six lanes, one answer.
+"""The orchestrator: one ask(), the lane set, one answer.
 
 Flow (all stdlib; the route lane runs FIRST as the front door that decides
 which lanes run, then the fact lanes run concurrently — they are network-bound):
@@ -19,12 +19,33 @@ which lanes run, then the fact lanes run concurrently — they are network-bound
                          │ yes
                          ▼
                    generate lane (LFM2-24B-A2B)
-                         │
+                        │
+                   ┌──────────┴───────────────────┐
+                   ▼                              ▼
+                   GLiDE gate (validate)          sys1 score (d1: is the answer correct?)
+                   │                       wrong ──► ONE reprocess (the score's
+                   │                                feedback) ──► corrected ships
+                   ▼
+                   passed ──► ship
+                   failed ──► ONE retry (verdict as feedback) ──► cleared? ──► ship
+                   │
+                   ▼
+                   inconclusive, or the retry did not clear the gate
+                   │
+                   ▼
+                   escalation leg — a LARGER configured model answers with the same
+                   givens (untrusted-source framing intact); the escalated answer ships
+                   FLAGGED (result key `escalated_answer`). Unconfigured → named skip;
+                   failed → the original ships with the failure named.
+                   │
+                   ▼
                    final answer (+ optional voice)
 
 Every lane fails open: a lane that cannot answer records its reason and the
 blend composes the best answer from the lanes that did answer. The result
-names which lanes answered (BlendResult.escalated).
+names which lanes answered (BlendResult.escalated). The gate never blocks,
+the escalation never blocks, and the score never blocks — each unresolved
+outcome rides named in the result.
 
 """
 
@@ -116,6 +137,54 @@ def _retry_feedback(validation: dict) -> str:
     return "A validation gate rejected your previous answer: " + "; ".join(problems) + "."
 
 
+def _score_feedback(score: dict) -> str:
+    """Render the sys1 correctness verdict as feedback for the reprocess's
+    system prompt — the retry's discipline, applied to the score."""
+    noul = score.get("is_correct")
+    rated = (
+        f" (rated {noul:.2f} on being correct against the given facts)"
+        if noul is not None
+        else ""
+    )
+    correctness = score.get("correctness")
+    if correctness is not None:
+        rated += f", correctness {correctness}/5"
+    return (
+        "A correctness scorer rejected your previous answer"
+        + rated
+        + " — answer the actual ask and restate the given facts exactly."
+    )
+
+
+def _escalation_feedback(validation: dict) -> str:
+    """Render the gate's unresolved verdict as feedback for the escalation
+    leg's system prompt — the same correction discipline the retry uses, so
+    the larger model sees why the smaller one's answer was not cleared."""
+    if validation.get("retry_passed") is False:
+        # The retry ran and did not clear the gate: the original verdict's
+        # reasons ride along (the retry's feedback, unchanged).
+        return _retry_feedback(validation)
+    # Inconclusive: the critic chain could not break the tie — name the
+    # ratings that sat near their floors rather than inventing a failure.
+    parts = ["the validation gate could not reach a confident verdict"]
+    atq = validation.get("answers_the_question")
+    contra = validation.get("contradicts_facts")
+    if atq is not None:
+        parts.append(f"answers_the_question rated {atq:.2f}")
+    if contra is not None:
+        parts.append(f"contradicts_facts rated {contra:.2f}")
+    if validation.get("number_check") == "flagged":
+        parts.append(
+            "numbers cited that are not in the given facts: "
+            + ", ".join(validation.get("flagged_numbers") or [])
+        )
+    return (
+        "A validation gate left the previous answer unresolved: "
+        + "; ".join(parts)
+        + " — answer the actual ask and use only the given facts."
+    )
+
+
 def _fallback_answer(
     route: dict, semantic: dict, tabular: dict, web: dict, target: str | None, generated: dict
 ) -> str:
@@ -173,6 +242,8 @@ def ask(
             semantic lane.
         log: append the redacted JSONL row (default True).
         _lane_overrides: test seam — {lane_name: callable} replaces a lane.
+            Recognized names: route, semantic, tabular, generate, validate,
+            score, escalation, web, voice.
     """
     t0 = time.monotonic()
     ov = _lane_overrides or {}
@@ -235,6 +306,9 @@ def ask(
     web_facts = _web_facts(web)
     generated: dict = {}
     validation: dict = {}
+    score: dict = {}
+    escalation: dict = {}
+    escalated_answer = False
     if needs_generation:
         # The givens the number check allows = the prompt + the computed
         # facts + the live web excerpts. The prompt matters: an asker's own
@@ -286,7 +360,76 @@ def ask(
                 # reason rides in the validation report, not the answer.
                 validation = {"status": "error", "error": validation.get("error")}
 
-    if needs_generation and generated.get("status") == "ok":
+        # ── sys1 correctness score: d1 judges the generated answer beside
+        # the GLiDE gate, on the same state shape and the same evidence ──
+        if generated.get("status") == "ok":
+            if route.get("status") != "ok":
+                # The route lane is the sys1 front door: it errored, so sys1
+                # is unavailable — NO score, the absence named. Never a
+                # fabricated score.
+                score = {
+                    "status": "skipped",
+                    "reason": "sys1 unavailable — the route lane errored; "
+                    "no correctness score",
+                }
+            else:
+                score_fn = ov.get("score", lanes.score_lane)
+                score = score_fn(_validate_state(prompt, givens, generated["text"]))
+                if score.get("status") == "ok" and score.get("correct") is False:
+                    # One bounded reprocess: the score's verdict rides back
+                    # into the generate lane as feedback (the retry's
+                    # discipline). Worst case ≈ 2x generate cost on this leg,
+                    # failures only.
+                    reprocess = gen_fn(
+                        prompt,
+                        tabular_facts=_tabular_facts(tabular, target or "target"),
+                        semantic_facts=_semantic_facts(semantic),
+                        web_facts=web_facts,
+                        feedback=_score_feedback(score),
+                    )
+                    if reprocess.get("status") == "ok" and reprocess.get("text"):
+                        generated = reprocess
+                        score = {**score, "reprocessed": True, "shipped": "reprocessed"}
+                    else:
+                        # The reprocess failed too: the scored answer ships
+                        # with the failure named — the score never blocks.
+                        score = {
+                            **score,
+                            "reprocessed": True,
+                            "shipped": "original",
+                            "reprocess_error": reprocess.get("error")
+                            or "the reprocess returned no text",
+                        }
+                elif score.get("status") == "ok":
+                    score = {**score, "reprocessed": False, "shipped": "original"}
+
+        # ── escalation leg: a LARGER configured model answers what the gate
+        # could not clear (inconclusive, or the retry uncleared) ──
+        if generated.get("status") == "ok":
+            gate_inconclusive = (
+                validation.get("status") == "ok" and validation.get("passed") is None
+            )
+            retry_uncleared = validation.get("retry_passed") is False
+            if gate_inconclusive or retry_uncleared:
+                esc_fn = ov.get("escalation", lanes.escalation_lane)
+                escalation = esc_fn(
+                    prompt,
+                    tabular_facts=_tabular_facts(tabular, target or "target"),
+                    semantic_facts=_semantic_facts(semantic),
+                    web_facts=web_facts,
+                    feedback=_escalation_feedback(validation),
+                )
+                if escalation.get("status") == "ok" and escalation.get("text"):
+                    # The escalated answer ships FLAGGED (escalated_answer) —
+                    # the gate's unresolved verdict rides beside it.
+                    escalated_answer = True
+                    escalation = {**escalation, "shipped": True}
+                # Unconfigured → skipped (named); failed → error (named).
+                # Either way the original answer ships: never a block.
+
+    if escalated_answer:
+        final_answer = escalation["text"]
+    elif needs_generation and generated.get("status") == "ok":
         final_answer = generated["text"]
     else:
         # Direct path — or the generative lane failed open: compose from facts.
@@ -307,8 +450,11 @@ def ask(
         validation=validation,
         voice=voice_report,
         web=web,
+        escalation=escalation,
+        score=score,
         final_answer=final_answer,
         total_latency_ms=int((time.monotonic() - t0) * 1000),
+        escalated_answer=escalated_answer,
     )
 
     if log:
@@ -326,6 +472,9 @@ def ask(
             "voice": voice_report,
             "web": {k: v for k, v in web.items() if k != "results"},
             "web_result_urls": [r["url"] for r in web.get("results", [])],
+            "escalation": {k: v for k, v in escalation.items() if k not in ("text", "telemetry")},
+            "score": {k: v for k, v in score.items() if k != "telemetry"},
+            "escalated_answer": escalated_answer,
             "answer_sha256": prompt_sha256(final_answer),
             "answer_chars": len(final_answer),
             "total_latency_ms": result.total_latency_ms,

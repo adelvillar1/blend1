@@ -160,6 +160,11 @@ def _dispatch(args) -> int:
         print(json.dumps(result.as_dict(), indent=2, default=str))
     else:
         print(result.final_answer)
+        if result.escalated_answer:
+            print(f"\n[escalated answer: a larger configured model "
+                  f"({result.escalation.get('model', 'unknown')}) answered after the "
+                  "validation gate could not clear the previous one — see --json]",
+                  file=sys.stderr)
         if result.escalated:
             print("\n[escalated: a lane failed open — see --json]", file=sys.stderr)
     return 0
