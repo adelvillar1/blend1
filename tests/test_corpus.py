@@ -320,3 +320,47 @@ def test_ask_threads_the_resolved_project_to_the_semantic_lane(store, fake_sem1)
     r = ask("alpha billing?", project="alpha", log=False, _lane_overrides={"route": _ok_route})
     keys = [n["key"] for n in r.semantic["neighbors"]]
     assert keys == ["alpha-doc"], "ask must retrieve from the named project's store"
+
+
+# ── review-fix regressions (quality review 2026-10-14) ──
+
+def test_resolve_project_repo_at_filesystem_root_is_none(monkeypatch):
+    """A repo at / has no basename (Path('/').name == ''): the resolver must
+    return None (legacy), not the empty string — store_root('') would
+    silently land in the legacy root and report a phantom project."""
+    monkeypatch.delenv("BLEND1_PROJECT", raising=False)
+
+    def _fake_run(cmd, **kw):
+        assert cmd[:3] == ["git", "rev-parse", "--show-toplevel"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="/\n", stderr="")
+
+    monkeypatch.setattr(corpus.subprocess, "run", _fake_run)
+    assert corpus.resolve_project(None) is None
+
+
+def test_store_root_rejects_path_escape(store):
+    """A project name is one path component: separators and dot-dirs are a
+    ValueError, not a write outside the store root. These stores are
+    documented as shared with other processes — the boundary holds."""
+    for bad in ("../../etc", "a/b", "..", "."):
+        with pytest.raises(ValueError, match="single path component"):
+            corpus.store_root(bad)
+    assert corpus.store_root("ok-name").name == "ok-name"
+
+
+def test_source_files_exclude_local_env_by_any_name(store, tmp_path, monkeypatch):
+    """The CLAUDE.local.md exclusion holds for an explicit --from AND for a
+    symlink under an innocent name (resolved.name is checked too) — that
+    file carries key values and must never enter a shared store."""
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / "CLAUDE.local.md"
+    local.write_text("LIQUID_API_KEY=secret-value\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    link = tmp_path / "docs" / "keys.md"
+    link.symlink_to(local)
+    (tmp_path / "docs" / "real.md").write_text("## Real\n\nbody\n", encoding="utf-8")
+
+    files = corpus._source_files(["CLAUDE.local.md", "docs/*", "docs/keys.md"])
+    assert [p.name for p in files] == ["real.md"], "the env file is excluded by every path"
+    items = corpus.derive_items(["docs/*"])
+    assert all("secret-value" not in it["text"] for it in items)

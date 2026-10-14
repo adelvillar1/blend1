@@ -57,6 +57,14 @@ def store_root(project: str | None) -> Path:
     root = _base_root()
     if project is None or project == "default":
         return root
+    # A project name is ONE path component — no separators, no dot-dirs.
+    # These stores are documented as shared with other processes, so a
+    # crafted --project must not escape the root.
+    if project in (".", "..") or "/" in project or Path(project).name != project:
+        raise ValueError(
+            f"project name must be a single path component (got {project!r}); "
+            "it names a directory under the store root"
+        )
     return root / project
 
 
@@ -81,7 +89,7 @@ def resolve_project(explicit: str | None = None) -> str | None:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None  # not a repo (or git missing/hung) → legacy
-    return Path(top).name if top else None
+    return Path(top).name or None  # a repo at the filesystem root has no name → legacy
 
 
 def _hash_text(text: str) -> str:
@@ -103,8 +111,9 @@ def _rebuild(items: list[dict], root: Path) -> dict:
     ]
     meta = [{"text": it["text"]} for it in items]
     # Store under the fixed slug (the server's model id is a full gguf path —
-    # it rides inside the manifest, never in the directory name, so
-    # retrieve() finds the store regardless of which snapshot served).
+    # it stays out of the directory name, and the manifest carries only the
+    # slug + provider, so retrieve() finds the store regardless of which
+    # snapshot served).
     manifest = VectorStore(root).rebuild(
         MODEL_SLUG, res.dims, res.provider, entries, meta
     )
@@ -164,7 +173,15 @@ def _source_files(sources: list[str] | None) -> list[Path]:
     out: list[Path] = []
     for p in sorted(matched):
         resolved = p.resolve()
-        if resolved in seen or p.suffix != ".md" or p.name in EXCLUDED_FILENAMES:
+        # The exclusion tests BOTH names: p.name catches a direct match,
+        # resolved.name catches a symlink under an innocent name (a link
+        # named docs/keys.md pointing at CLAUDE.local.md resolves to it).
+        if (
+            resolved in seen
+            or p.suffix != ".md"
+            or p.name in EXCLUDED_FILENAMES
+            or resolved.name in EXCLUDED_FILENAMES
+        ):
             continue
         if not p.is_file():
             continue
@@ -179,7 +196,9 @@ def _chunks(path: Path) -> list[tuple[str, str, str]]:
     ## is one entry keyed (preamble). Text = heading line + section body,
     capped at SECTION_MAX_CHARS. relpath is relative to CWD, POSIX."""
     rel = Path(os.path.relpath(path)).as_posix()
-    lines = path.read_text(encoding="utf-8").splitlines()
+    # errors="replace": a non-UTF-8 .md file degrades to replacement chars,
+    # never a traceback mid-refresh.
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     preamble: list[str] = []
     sections: list[tuple[str, list[str]]] = []
     heading = ""
@@ -227,7 +246,14 @@ def refresh(*, project: str | None = None, sources: list[str] | None = None) -> 
     (key, sha256) set differs from the store manifest — steady state is file
     reads + hashes, no embedding. Never raises on a missing/empty source
     set: action "no-source", no store created. Report:
-    {project, source_files, items, changed, action, store}."""
+    {project, source_files, items, changed, action, store}.
+
+    Known limitation (documented, not fixed): the check compares text
+    hashes only. If the embedding server's model/dims change behind the
+    fixed slug, hashes still match and the store reports "unchanged" —
+    model drift is undetectable without an embedding call. Re-seed
+    explicitly (`blend1 seed`) after a model change.
+    """
     resolved = resolve_project(project)
     root = store_root(resolved)
     items, n_files = _derive(sources)

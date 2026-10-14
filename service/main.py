@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="blend1", version="0.1.0")
@@ -63,11 +63,18 @@ def ask(payload: AskPayload):
 def search(payload: SearchPayload):
     import time
 
+    from sem1 import Sem1Error
+
     import blend1
     from blend1.corpus import resolve_project
 
     t0 = time.monotonic()
-    results = blend1.search(payload.query, project=payload.project, k=payload.k)
+    try:
+        results = blend1.search(payload.query, project=payload.project, k=payload.k)
+    except ValueError as e:  # bad project name — a usage error
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Sem1Error as e:  # embedding server down — retryable, not a crash
+        raise HTTPException(status_code=503, detail=str(e)) from e
     return {
         "project": resolve_project(payload.project),
         "query": payload.query,

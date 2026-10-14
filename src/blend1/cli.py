@@ -20,6 +20,27 @@ import sys
 _PROJECT_HELP = "corpus project (default: $BLEND1_PROJECT or the cwd repo name)"
 
 
+def _corpus_guard(fn) -> int:
+    """Run a corpus-touching command with typed failures as clean one-line
+    errors — never a traceback. The warmup step's fail-soft contract depends
+    on this: a down embedding server or a bad project name is a message and
+    a non-zero exit, not a stack trace in the middle of a session start."""
+    from sem1 import Sem1Error
+
+    try:
+        fn()
+        return 0
+    except ValueError as e:  # bad project name, unusable source path
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Sem1Error as e:  # embedding server unreachable/misbehaving
+        print(f"error: embedding server unavailable: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:  # unreadable source, unwritable store
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
 def _read_csv(path: str) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as f:
         return [dict(row) for row in csv.DictReader(f)]
@@ -66,7 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     p_migrate.add_argument("project")
 
     args = ap.parse_args(argv)
+    return _corpus_guard(lambda: _dispatch(args))
 
+
+def _dispatch(args) -> int:
     if args.cmd == "doctor":
         import blend1
 
