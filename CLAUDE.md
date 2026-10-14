@@ -53,7 +53,7 @@ paste key values into commits, docs, or chat.
 - `env.py` — key-file loading (`~/.config/blend1/env` → `sdm1/env` → `dev-decisions/env` → `gen1/env`)
 - `telemetry.py` — redacted JSONL log
 - `cli.py` — `blend1 ask|doctor|seed|search|refresh|corpus`
-- `service/main.py` — FastAPI wrapper (`/v1/ask`, `/v1/search`, `/v1/health`, port 8420)
+- `service/main.py` — FastAPI wrapper (`/v1/ask`, `/v1/chat/completions`, `/v1/search`, `/v1/health`, port 8420)
 
 **Sibling lanes** (path dependencies, editable): `../sys1`, `../sem1`, `../sdm1`, `../gen1`
 
@@ -117,6 +117,7 @@ cd ~/Projects/blend1 && service/.venv/bin/uvicorn service.main:app --port 8420  
   blend**: accuracy held 5/5 but the reasoning 24B burns 5–20× more completion
   tokens on compressed prompts (net 3–8× cost on billed output) — Compress pays
   only in front of non-reasoning or free-output models, or very large contexts.
+- **Composed-tier endpoint shipped 2026-10-14** (plan `2026-10-14-composed-tier.md`): the service speaks `POST /v1/chat/completions` over `ask()` — messages render as `role: content` lines, the answer rides in the OpenAI envelope, and blend1's truth rides beside it in a non-standard `blend1` field (`path`, `route`, `validation`, `escalated_answer`, `cost_usd`, `latency_ms`). Fail-open on the wire: an empty answer is a 200 with the reason in the field, a non-passing gate is a 200 with the answer flagged, a malformed envelope is a 400 before any spend, the only other non-200 is a 401 on a bad bearer when `BLEND1_BEARER_TOKEN` is set. The agnostic-router-kit routes a `composed` tier to it (fallbacks = the standard chain; a down blend degrades to a plain model). Live-verified through the router 2026-10-14 (workload `composed`, verdict riding, $0.00197; failover proven). Offline suite 82/82, ruff clean.
 - **Reasoning-at-lower-cost probe 2026-10-13 (the user's stated interest):** three
   arms over the blend's own 21K-token corpus, five reasoning-shaped questions
   (arithmetic over documented costs, multi-hop over the orchestrator's control
