@@ -165,3 +165,33 @@ def test_web_rejects_malformed_arguments(tmp_path):
     assert "query" in replies[0]["error"]["message"]
     assert "fetch" in replies[1]["error"]["message"]
     assert "max_urls" in replies[2]["error"]["message"]
+
+
+def test_refresh_without_the_sibling_wiring_names_the_variable(tmp_path):
+    """KI-310: refresh imports the sem1 core at call time, so a client
+    that launched the server with only blend1's own path gets the missing
+    variable NAMED — "refresh needs the sem1 core: set
+    BLEND1_SEM1_PYTHONPATH to services/sem1/src" — not a bare
+    ModuleNotFoundError wearing a -32603."""
+    # A source that exists, so the refresh reaches the embed leg — the
+    # only leg that imports the sem1 core (a no-source refresh returns
+    # before the import and would answer success).
+    source = tmp_path / "doc.md"
+    source.write_text("## Notes\n\nbody\n", encoding="utf-8")
+    replies = _drive(
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            _call(
+                "refresh",
+                {"project": "some-project", "sources": [str(source)]},
+            ),
+        ],
+        tmp_path,
+    )
+    reply = replies[-1]
+    assert "error" in reply, reply
+    assert reply["error"]["code"] == -32603, reply
+    message = reply["error"]["message"]
+    assert "refresh needs the sem1 core" in message, message
+    assert "BLEND1_SEM1_PYTHONPATH" in message, message
+    assert "services/sem1/src" in message, message

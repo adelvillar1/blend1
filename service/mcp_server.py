@@ -218,12 +218,15 @@ REFRESH_TOOL = {
     "description": (
         "Re-derive a project's corpus from its docs and rebuild only when "
         "the text hashes changed — the steady state is file reads, no "
-        "embedding. The report names what happened (action: rebuilt | "
-        "unchanged | no-source). CLAUDE.local.md is never in a corpus (the "
-        "library's guard, inherited). Over MCP the child's cwd is the "
-        "lane's home (services/blend1/), so an omitted `project` resolves "
-        "to the repo hosting services/ and an omitted `sources` derives "
-        "nothing there (no-source): pass both explicitly."
+        "embedding. Unlike ask/doctor/search this tool needs the sibling "
+        "wiring: BLEND1_SEM1_PYTHONPATH must name services/sem1/src, and "
+        "a call without it is refused naming that variable. The report "
+        "names what happened (action: rebuilt | unchanged | no-source). "
+        "CLAUDE.local.md is never in a corpus (the library's guard, "
+        "inherited). Over MCP the child's cwd is the lane's home "
+        "(services/blend1/), so an omitted `project` resolves to the "
+        "repo hosting services/ and an omitted `sources` derives nothing "
+        "there (no-source): pass both explicitly."
     ),
     "inputSchema": {
         "type": "object",
@@ -603,6 +606,18 @@ def main() -> None:
                     report = blend1.refresh_corpus(project=resolved, sources=sources)
                 except ValueError as e:
                     error(req_id, -32602, str(e))
+                    continue
+                except ModuleNotFoundError as e:
+                    # The refresh leg imports the sem1 core at call time;
+                    # a client that launched the server with only
+                    # blend1's own path gets the missing variable named,
+                    # not a bare ModuleNotFoundError (KI-310).
+                    error(
+                        req_id,
+                        -32603,
+                        f"refresh needs the sem1 core: set BLEND1_SEM1_PYTHONPATH "
+                        f"to services/sem1/src ({type(e).__name__}: {e})",
+                    )
                     continue
                 except Exception as e:
                     error(req_id, -32603, f"{type(e).__name__}: {e}")
