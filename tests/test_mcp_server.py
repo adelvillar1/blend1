@@ -18,6 +18,8 @@ Run: python3 -m pytest services/blend1/tests/test_mcp_server.py
 import json
 import os
 import subprocess
+
+import pytest
 import sys
 from pathlib import Path
 
@@ -173,6 +175,17 @@ def test_refresh_without_the_sibling_wiring_names_the_variable(tmp_path):
     variable NAMED — "refresh needs the sem1 core: set
     BLEND1_SEM1_PYTHONPATH to services/sem1/src" — not a bare
     ModuleNotFoundError wearing a -32603."""
+    # The row's precondition, enforced rather than assumed: the child's
+    # interpreter must not carry sem1 (a project venv that installed it
+    # makes the refusal unreachable and a plain refresh legitimate —
+    # skip there and name why).
+    probe = subprocess.run(
+        [sys.executable, "-c", "import sem1"],
+        capture_output=True,
+        env={k: v for k, v in _child_env(tmp_path).items() if k != "BLEND1_PYTHONPATH"},
+    )
+    if probe.returncode == 0:
+        pytest.skip("the child's interpreter imports sem1; no missing variable to name")
     # A source that exists, so the refresh reaches the embed leg — the
     # only leg that imports the sem1 core (a no-source refresh returns
     # before the import and would answer success).
