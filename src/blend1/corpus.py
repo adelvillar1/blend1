@@ -37,7 +37,13 @@ MODEL_SLUG = "embeddinggemma-2"  # store slug; the real model id rides in the ma
 # Docs-derived refresh — the default source set (relative to CWD): every
 # docs/**/*.md plus the root contract docs when they exist.
 DEFAULT_ROOT_DOCS = ("CLAUDE.md", "TECHNICAL-DOCUMENTATION.md", "FUNCTIONAL-SPECIFICATIONS.md")
-SECTION_MAX_CHARS = 2000  # v1 chunking cap — tunable; keys are visible in search output
+SECTION_MAX_CHARS = 2000
+
+# The one-shot embed's budget, in seconds: the corpus a refresh derives is
+# embedded in a single call, and a corpus past http_llama's inherited 60-second
+# default times out mid-embed (KI-222). Ten minutes is the measured headroom
+# for a corpus several times fleet's own 638 entries.
+EMBED_TIMEOUT_SECONDS = 600.0  # v1 chunking cap — tunable; keys are visible in search output
 # CLAUDE.local.md carries key values — it is NEVER in a corpus, even when a
 # caller's glob would otherwise match it: other processes read these stores.
 EXCLUDED_FILENAMES = frozenset({"CLAUDE.local.md"})
@@ -99,12 +105,21 @@ def _hash_text(text: str) -> str:
 def _rebuild(items: list[dict], root: Path) -> dict:
     """Embed `items` and rebuild the store under `root` wholesale — sem1's
     rebuild replaces the model's store (dedup by key, atomic tmp+rename),
-    so a rebuild over the same corpus is idempotent by construction."""
+    so a rebuild over the same corpus is idempotent by construction.
+
+    KI-222: the embed rides a longer timeout than http_llama's inherited
+    60-second default. A corpus past ~500 chunks — fleet's own is 638
+    entries over 85 sources as of 2026-10-17 — cannot finish inside it,
+    and the ceiling was measured as "unbuildable through the lane's
+    one-shot embed" when it is only unbuildable inside that default.
+    The kwarg exists at `sem1/providers/http_llama.py:28`; this passes
+    it, and the corpus size is named in the docstring so the next
+    ceiling is a measurement rather than a surprise."""
     import sem1
     from sem1.store import VectorStore
 
     texts = [it["text"] for it in items]
-    res = sem1.embed(texts)
+    res = sem1.embed(texts, timeout=EMBED_TIMEOUT_SECONDS)
     entries = [
         (it["key"], _hash_text(it["text"]), vec)
         for it, vec in zip(items, res.vectors, strict=True)
@@ -157,15 +172,25 @@ def retrieve(
     return scored[:k]
 
 
-def _source_files(sources: list[str] | None) -> list[Path]:
+def _source_files(sources: list[str] | None) -> tuple[list[Path], list[str]]:
     """The files to derive from: `sources` (file paths or globs) REPLACES the
     default set (docs/**/*.md + the root contract docs). .md-only by
     construction and CLAUDE.local.md never — it carries key values and these
-    stores are read by other processes. Deduped, sorted, deterministic."""
+    stores are read by other processes. Deduped, sorted, deterministic.
+
+    Returns (files, missing): the second is every declared source that
+    resolved to nothing. KI-225 — a job whose task string lists sources
+    that do not exist used to derive silently from whatever remained,
+    so a stale job looked like a successful refresh of fewer files. A
+    missing source is named in the report instead."""
     if sources is not None:
         matched: list[Path] = []
+        missing: list[str] = []
         for pattern in sources:
-            matched.extend(Path(p) for p in glob.glob(pattern, recursive=True))
+            hits = glob.glob(pattern, recursive=True)
+            if not hits and not Path(pattern).is_file():
+                missing.append(pattern)
+            matched.extend(Path(p) for p in hits)
     else:
         matched = list(Path("docs").rglob("*.md"))
         matched.extend(Path(name) for name in DEFAULT_ROOT_DOCS if Path(name).is_file())
@@ -187,15 +212,22 @@ def _source_files(sources: list[str] | None) -> list[Path]:
             continue
         seen.add(resolved)
         out.append(p)
-    return out
+    return out, (missing if sources is not None else [])
 
 
 def _chunks(path: Path) -> list[tuple[str, str, str]]:
     """(relpath, heading, text) chunks for one file: split on ^## headings
     (### stays in the section body); a non-empty preamble before the first
     ## is one entry keyed (preamble). Text = heading line + section body,
-    capped at SECTION_MAX_CHARS. relpath is relative to CWD, POSIX."""
-    rel = Path(os.path.relpath(path)).as_posix()
+    capped at SECTION_MAX_CHARS. The key is the ABSOLUTE path, POSIX.
+
+    KI-223: the key used to be relative to the process's cwd, so the
+    same absolute sources under a different cwd derived a different key
+    set with byte-identical text — every cwd variation rebuilt the
+    whole store and re-embedded unchanged text. The absolute path is
+    the one cwd-independent name a source has; the cost is that a store
+    built before this change rebuilds once and then holds."""
+    rel = path.resolve().as_posix()
     # errors="replace": a non-UTF-8 .md file degrades to replacement chars,
     # never a traceback mid-refresh.
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -222,16 +254,33 @@ def _chunks(path: Path) -> list[tuple[str, str, str]]:
     return [(r, h, t[:SECTION_MAX_CHARS]) for r, h, t in out]
 
 
-def _derive(sources: list[str] | None) -> tuple[list[dict], int]:
-    """(items, source_file_count) — items sorted by (relpath, heading) so a
-    rebuild over unchanged docs is byte-stable."""
-    files = _source_files(sources)
+def _derive(sources: list[str] | None) -> tuple[list[dict], int, list[str], int]:
+    """(items, source_file_count, missing_sources, dropped_duplicates) —
+    items deduplicated by key, first occurrence kept, sorted by
+    (relpath, heading) so a rebuild over unchanged docs is byte-stable.
+
+    A doc that repeats a `## heading` with different bodies used to
+    leave the derived (key, sha) set permanently larger than the store,
+    which keeps one entry per key — every refresh reported rebuilt and
+    re-embedded a byte-identical corpus, four projects recorded
+    (KI-297). The dropped count keeps the truncation visible instead of
+    silent: a repeated heading is a doc shape worth knowing about."""
+    files, missing = _source_files(sources)
     triples: list[tuple[str, str, str]] = []
     for path in files:
         triples.extend(_chunks(path))
     triples.sort(key=lambda t: (t[0], t[1]))
-    items = [{"key": f"{rel}#{heading}", "text": text} for rel, heading, text in triples]
-    return items, len(files)
+    items: list[dict] = []
+    seen: set[str] = set()
+    dropped = 0
+    for rel, heading, text in triples:
+        key = f"{rel}#{heading}"
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        items.append({"key": key, "text": text})
+    return items, len(files), missing, dropped
 
 
 def derive_items(sources: list[str] | None = None) -> list[dict]:
@@ -256,14 +305,16 @@ def refresh(*, project: str | None = None, sources: list[str] | None = None) -> 
     """
     resolved = resolve_project(project)
     root = store_root(resolved)
-    items, n_files = _derive(sources)
+    items, n_files, missing, dropped = _derive(sources)
     report: dict = {
         "project": resolved,
         "source_files": n_files,
         "items": len(items),
+        "dropped_duplicates": dropped,
         "changed": False,
         "action": "no-source",
         "store": str(root),
+        "missing_sources": missing,
     }
     if not items:
         return report
