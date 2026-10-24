@@ -186,25 +186,29 @@ def test_derive_items_chunks_sections_with_preamble(store, monkeypatch, tmp_path
     items = corpus.derive_items()
     keys = [it["key"] for it in items]
 
-    # one entry per ## section + one non-empty preamble per file, sorted by
-    # (relpath, heading) — deterministic
+    # KI-223 (fleet's carry): the key is the source's ABSOLUTE path, so the
+    # same source derives the same key set from any working directory — a
+    # refresh's change detection cannot be poisoned by the cwd. One entry
+    # per ## section + one non-empty preamble per file, sorted by
+    # (abspath, heading) — deterministic.
+    absolute = tmp_path.resolve().as_posix()
     assert keys == [
-        "CLAUDE.md#Router",
-        "FUNCTIONAL-SPECIFICATIONS.md#Behavior",
-        "TECHNICAL-DOCUMENTATION.md#(preamble)",
-        "docs/guide.md#(preamble)",
-        "docs/guide.md#Setup",
-        "docs/guide.md#Teardown",
-        "docs/huge.md#Big",
-        "docs/sub/extra.md#Only section",
+        f"{absolute}/CLAUDE.md#Router",
+        f"{absolute}/FUNCTIONAL-SPECIFICATIONS.md#Behavior",
+        f"{absolute}/TECHNICAL-DOCUMENTATION.md#(preamble)",
+        f"{absolute}/docs/guide.md#(preamble)",
+        f"{absolute}/docs/guide.md#Setup",
+        f"{absolute}/docs/guide.md#Teardown",
+        f"{absolute}/docs/huge.md#Big",
+        f"{absolute}/docs/sub/extra.md#Only section",
     ]
     by_key = {it["key"]: it["text"] for it in items}
-    assert by_key["docs/guide.md#Setup"].startswith("## Setup")
-    assert "### Deep detail" in by_key["docs/guide.md#Setup"], "### stays in the section body"
+    assert by_key[f"{absolute}/docs/guide.md#Setup"].startswith("## Setup")
+    assert "### Deep detail" in by_key[f"{absolute}/docs/guide.md#Setup"], "### stays in the section body"
     assert all(len(it["text"]) <= corpus.SECTION_MAX_CHARS for it in items)
-    assert len(by_key["docs/huge.md#Big"]) == corpus.SECTION_MAX_CHARS, "text is capped"
+    assert len(by_key[f"{absolute}/docs/huge.md#Big"]) == corpus.SECTION_MAX_CHARS, "text is capped"
     # CLAUDE.local.md carries key values — never in the corpus, by construction
-    assert not any(k.startswith("CLAUDE.local.md") for k in keys)
+    assert not any("CLAUDE.local.md" in k for k in keys)
     # non-.md files never enter the set
     assert not any("notes.txt" in k for k in keys)
 
@@ -213,9 +217,10 @@ def test_derive_items_explicit_sources_replace_the_default(store, monkeypatch, t
     _write_tree(tmp_path)
     monkeypatch.chdir(tmp_path)
     items = corpus.derive_items(["CLAUDE.md", "docs/sub/*.md"])
+    base = tmp_path.resolve().as_posix()
     assert [it["key"] for it in items] == [
-        "CLAUDE.md#Router",
-        "docs/sub/extra.md#Only section",
+        f"{base}/CLAUDE.md#Router",
+        f"{base}/docs/sub/extra.md#Only section",
     ]
 
 
@@ -360,7 +365,10 @@ def test_source_files_exclude_local_env_by_any_name(store, tmp_path, monkeypatch
     link.symlink_to(local)
     (tmp_path / "docs" / "real.md").write_text("## Real\n\nbody\n", encoding="utf-8")
 
-    files = corpus._source_files(["CLAUDE.local.md", "docs/*", "docs/keys.md"])
+    # KI-225 (fleet's carry): _source_files returns (files, missing) — a
+    # declared source that resolves to nothing is named, not skipped.
+    files, missing = corpus._source_files(["CLAUDE.local.md", "docs/*", "docs/keys.md"])
     assert [p.name for p in files] == ["real.md"], "the env file is excluded by every path"
+    assert missing == [], "the symlink resolves to the env file and is excluded, not missing"
     items = corpus.derive_items(["docs/*"])
     assert all("secret-value" not in it["text"] for it in items)
